@@ -13,4 +13,7 @@ testing/*/OUTPUT/*
 testing/*/*/OUTPUT
 umlsetup.sh
 osxApp/build
+.cproject
+.project
+.settings/
 Makefile.inc.local
