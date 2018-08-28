@@ -14,7 +14,10 @@
 
 extern void echo_hdr(struct msg_digest *md, bool enc, u_int8_t np);
 
-extern void ipsecdoi_initiate(int whack_sock, struct connection *c
+extern so_serial_t ipsecdoi_initiate(int whack_sock
+                                     , struct state *old_parent_state
+                                     , struct state *oldstate
+                                     , struct connection *c
 			      , lset_t policy, unsigned long try
 			      , so_serial_t replacing
 			      , enum crypto_importance importance
@@ -62,12 +65,6 @@ extern notification_t accept_KE(chunk_t *dest, const char *val_name
  */
 extern void close_message(pb_stream *pbs); /* forward declaration */
 extern bool encrypt_message(pb_stream *pbs, struct state *st); /* forward declaration */
-
-extern stf_status dpd_inI_outR(struct state *st
-            , struct isakmp_notification *const n, pb_stream *n_pbs);
-extern stf_status dpd_inR(struct state *st
-            , struct isakmp_notification *const n, pb_stream *n_pbs);
-extern void dpd_timeout(struct state *st);
 
 /* START_HASH_PAYLOAD
  *

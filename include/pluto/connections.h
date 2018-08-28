@@ -136,6 +136,12 @@ struct ietfAttr;	/* forward declaration of ietfAttr defined in ac.h */
 struct IPhost_pair;    /* opaque type */
 struct IDhost_pair;    /* opaque type */
 
+struct dns_end_list {
+    bool             addresses_available;
+    struct addrinfo *address_list;  /* the list of all results returned */
+    struct addrinfo *next_address;  /* next one to try */
+};
+
 struct end {
     struct id id;
     bool      left;
@@ -147,6 +153,8 @@ struct end {
 	host_nexthop,
 	host_srcip;
     ip_subnet client;           /* consider replacing this with p2id from ikev1_quick.c */
+    ip_address saved_hint_addr;  /* the address we got from the cfg file if IPHOSTNAME */
+    struct dns_end_list host_address_list;
 
     bool key_from_DNS_on_demand;
     bool has_client;
@@ -163,6 +171,9 @@ struct end {
     cert_t  cert;		/* end certificate */
 
     chunk_t ca;			/* CA distinguished name */
+
+    struct pubkey *key1, *key2;  /* references to the public key to be used to authenticate this connection */
+
     struct ietfAttrList *groups;/* access control groups */
 
     struct virtual_t *virt;
@@ -240,19 +251,21 @@ struct connection {
     policy_prio_t prio;
     bool instance_initiation_ok;	/* this is an instance of a policy that mandates initiate */
     enum connection_kind kind;
+    bool                   ip_oriented; /* true iff oriented by IP address */
     const struct iface_port *interface;	/* filled in iff oriented */
 
     bool initiated;
     bool failed_ikev2;                  /* tried ikev2, but failed */
 
-    so_serial_t	/* state object serial number */
-	newest_isakmp_sa,
-	newest_ipsec_sa;
+    /* state object serial number: weak pointers */
+    so_serial_t	prospective_parent_sa;  /* state we are still negotiating */
+    so_serial_t newest_isakmp_sa;       /* state that is negotiated/up */
+    so_serial_t newest_ipsec_sa;        /* child SA state (should be array!) */
 
     lset_t extra_debugging;
 
     /* note: if the client is the gateway, the following must be equal */
-    sa_family_t addr_family;		/* between gateways */
+    sa_family_t end_addr_family;	/* between gateways */
     sa_family_t tunnel_addr_family;	/* between clients */
 
     struct connection *policy_next; /* if multiple policies,
@@ -273,9 +286,6 @@ struct connection {
 #ifdef XAUTH_USEPAM
     pam_handle_t  *pamh;		/*  PAM handle for that connection  */
 #endif
-#ifdef DYNAMICDNS
-    char *dnshostname;
-#endif /* DYNAMICDNS */
 #ifdef XAUTH
 # ifdef MODECFG
     ip_address modecfg_dns1;
@@ -295,10 +305,12 @@ struct connection {
 };
 
 #define oriented(c) ((c).interface != NULL)
+extern bool orient_same_addr_ok;
 extern bool orient(struct connection *c, unsigned int pluto_port);
 
 extern bool same_peer_ids(const struct connection *c
     , const struct connection *d, const struct id *his_id);
+extern bool compare_end_addr_names(struct end *a, struct end *b);
 
 /* Format the topology of a connection end, leaving out defaults.
  * Largest left end looks like: client === host : port [ host_id ] --- hop
@@ -337,7 +349,7 @@ extern void remove_group_instance(const struct connection *group, const char *na
 extern void release_dead_interfaces(void);
 extern void check_orientations(void);
 extern struct connection *route_owner(struct connection *c
-				      , struct spd_route *cur_spd
+				      , const struct spd_route *cur_spd
 				      , struct spd_route **srp
 				      , struct connection **erop
 				      , struct spd_route **esrp);
@@ -355,7 +367,7 @@ struct state;	/* forward declaration of tag (defined in state.h) */
 extern struct connection
 *con_by_name(const char *nm, bool strict);
 
-#define find_host_connection(exact, me, my_port, histype, him, his_port, policy) find_host_connection2(__FUNCTION__, exact, me, my_port, histype, him, his_port, policy)
+#define find_host_connection(exact, me, my_port, histype, him, his_port, policy_set, policy_clear, pPolicy_hint) find_host_connection2(__FUNCTION__, exact, me, my_port, histype, him, his_port, policy_set, policy_clear, pPolicy_hint)
 extern struct connection *find_host_connection2(const char *func
                                                 , bool exact
                                                 , const ip_address *me
@@ -363,7 +375,7 @@ extern struct connection *find_host_connection2(const char *func
                                                 , enum keyword_host histype
                                                 , const ip_address *him
                                                 , u_int16_t his_port
-                                                , lset_t policy);
+                                                , lset_t policy_set, lset_t policy_clear, lset_t *pPolicy_hint);
 extern struct connection *refine_host_connection(const struct state *st
                                                  , const struct id *id
                                                  , bool initiator, bool aggrmode);
@@ -472,6 +484,7 @@ struct pending **host_pair_first_pending(const struct connection *c);
 void connection_check_ddns(void);
 #endif
 
+extern bool kick_adns_connection(struct connection *c, err_t ugh);
 void connection_check_phase2(void);
 void init_connections(void);
 
@@ -490,7 +503,7 @@ extern int foreach_connection_by_alias(const char *alias
 
 extern struct connection *unoriented_connections;
 
-extern void update_host_pairs(struct connection *c);
+extern bool update_host_pairs(struct connection *c);
 
 #ifdef HAVE_LIBNSS
 extern void load_authcerts_from_nss(const char *type, u_char auth_flags);

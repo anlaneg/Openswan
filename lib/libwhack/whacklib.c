@@ -40,10 +40,12 @@
 #include "whack.h"
 #include "oswlog.h"
 
+#include "secrets.h"
+
 /**
  * Pack a string to a whack messages
- * 
- * @param wp 
+ *
+ * @param wp
  * @param p a string
  * @return bool True if operation was successful
  */
@@ -61,6 +63,11 @@ pack_str(struct whackpacker *wp, char **p)
     {
 	strcpy((char *)wp->str_next, s);
 	wp->str_next += len;
+        wp->cnt++;
+#if 0
+        DBG_log("packing: %u", wp->cnt);
+        DBG_dump("str", s, len);
+#endif
 	*p = NULL;	/* don't send pointers on the wire! */
 	return TRUE;
     }
@@ -69,7 +76,7 @@ pack_str(struct whackpacker *wp, char **p)
 
 /**
  * Unpack a whack message into a string
- * 
+ *
  * @param wp Whack Message
  * @param p a string into which you want the message to be placed into
  * @return bool True if operation successful
@@ -90,6 +97,10 @@ unpack_str(struct whackpacker *wp, char **p)
 	unsigned char *s = (wp->str_next == end? NULL : wp->str_next);
 
 	*p = (char *)s;
+        wp->cnt++;
+#if 0
+        fprintf(stderr, "%u: unpacked string: %s\n", wp->cnt, *p);
+#endif
 	wp->str_next = end + 1;
 	return TRUE;
     }
@@ -99,7 +110,7 @@ unpack_str(struct whackpacker *wp, char **p)
 
 /**
  * Pack a message to be sent to whack
- * 
+ *
  * @param wp The whack message
  * @return err_t
  */
@@ -138,7 +149,7 @@ err_t pack_whack_msg (struct whackpacker *wp)
 	|| !pack_str(wp, &wp->msg->string1)                /* string 24 */
 	|| !pack_str(wp, &wp->msg->string2)                /* string 25 */
 	|| !pack_str(wp, &wp->msg->string3)                /* string 26 */
-	|| !pack_str(wp, &wp->msg->dnshostname) /* string 27 ? */
+	|| !pack_str(wp, &wp->msg->string4)                /* string 27: was dnshostname*/
 	|| !pack_str(wp, &wp->msg->policy_label) /* string 28 */
 	|| wp->str_roof - wp->str_next < (ptrdiff_t)wp->msg->keyval.len)    /* chunk (sort of string 28) */
     {
@@ -148,7 +159,11 @@ err_t pack_whack_msg (struct whackpacker *wp)
 
     if(wp->msg->keyval.ptr)
     {
-	memcpy(wp->str_next, wp->msg->keyval.ptr, wp->msg->keyval.len);
+      if (wp->str_roof - wp->str_next < (ptrdiff_t)wp->msg->keyval.len) {
+        return "no space for public key";
+      }
+      memcpy(wp->str_next, wp->msg->keyval.ptr, wp->msg->keyval.len);
+      //log_ckaid("whack msg: %s", (unsigned char *)wp->str_next, wp->msg->keyval.len);
     }
     wp->msg->keyval.ptr = NULL;
     wp->str_next += wp->msg->keyval.len;
@@ -159,7 +174,7 @@ err_t pack_whack_msg (struct whackpacker *wp)
 
 /**
  * Unpack a message whack received
- * 
+ *
  * @param wp The whack message
  * @return err_t
  */
@@ -200,7 +215,7 @@ err_t unpack_whack_msg (struct whackpacker *wp)
 	|| !unpack_str(wp, &wp->msg->string1)                /* string 24 */
 	|| !unpack_str(wp, &wp->msg->string2)                /* string 25 */
 	|| !unpack_str(wp, &wp->msg->string3)                /* string 26 */
-	|| !unpack_str(wp, &wp->msg->dnshostname)  /* string 27 ? */
+	|| !unpack_str(wp, &wp->msg->string4)                /* string 27 was dnshostname*/
 	|| !unpack_str(wp, &wp->msg->policy_label) /* string 28 */
 	|| wp->str_roof - wp->str_next != (ptrdiff_t)wp->msg->keyval.len)	/* check chunk */
     {
@@ -235,9 +250,9 @@ whack_get_value(char *buf, size_t bufsize)
     while(try > 0 && len==0)
     {
 	fprintf(stderr, "Enter username:   ");
-	
+
 	memset(buf, 0, bufsize);
-	
+
 	if(fgets(buf, bufsize, stdin) != buf) {
 	    if(errno == 0) {
 		fprintf(stderr, "Can not read password from standard in\n");
@@ -247,7 +262,7 @@ whack_get_value(char *buf, size_t bufsize)
 		exit(RC_WHACK_PROBLEM);
 	    }
 	}
-	
+
 	/* send the value to pluto, including \0, but fgets adds \n */
 	len = strlen(buf);
 	if(len == 0)
@@ -280,7 +295,7 @@ whack_get_secret(char *buf, size_t bufsize)
     strncpy(buf, secret, bufsize);
 
     len = strlen(buf) + 1;
-    
+
     return len;
 }
 

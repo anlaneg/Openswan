@@ -1534,7 +1534,7 @@ void process_packet_tail(struct msg_digest **mdp)
     {
 	/* packet was not encryped -- should it have been? */
 
-	if (smc->flags & SMF_INPUT_ENCRYPTED)
+	if (smc != NULL && smc->flags & SMF_INPUT_ENCRYPTED)
 	{
 	    loglog(RC_LOG_SERIOUS, "packet rejected: should have been encrypted");
 	    SEND_NOTIFICATION(INVALID_FLAGS);
@@ -1950,7 +1950,12 @@ complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
      * we can only be in calculating state if state is ignore,
      * or suspended.
      */
-    passert(result == STF_INLINE || result == STF_IGNORE || result == STF_SUSPEND || st->st_calculating==FALSE);
+    passert(result == STF_INLINE || result == STF_IGNORE || result == STF_SUSPEND
+            || st == NULL || (st && st->st_calculating==FALSE));
+
+    if(md->transition_state == NULL) {
+        md->transition_state = st;
+    }
 
     switch (result)
     {
@@ -1990,7 +1995,7 @@ complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 		st->st_reserve_msgid=TRUE;
 	    }
 
-	    change_state(st, smc->next_state);
+            change_state(md->transition_state, smc->next_state);
 
 	    /* XAUTH negotiation withOUT modecfg ends in STATE_XAUTH_I1
  	     * which is wrong and creates issues further in several places
@@ -2005,7 +2010,7 @@ complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 		&& st->st_state == STATE_XAUTH_I1) {
 		DBG(DBG_CONTROL, DBG_log("As XAUTH is done and modecfg is not configured,
 						so Phase 1 neogtiation finishes successfully"));
-		change_state(st, STATE_MAIN_I4);
+		change_state(md->transition_state, STATE_MAIN_I4);
 	    }*/
 
 	    /* Schedule for whatever timeout is specified */
@@ -2288,7 +2293,7 @@ complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 	       && !st->hidden_variables.st_modecfg_vars_set
 	       && !(st->st_connection->policy & POLICY_MODECFG_PULL))
 	    {
-		    change_state(st, STATE_MODE_CFG_R1);
+                    change_state(md->transition_state, STATE_MODE_CFG_R1);
 		    set_cur_state(st);
 		    openswan_log("Sending MODE CONFIG set");
 		    modecfg_start_set(st);
@@ -2301,7 +2306,7 @@ complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 		&& IS_MODE_CFG_ESTABLISHED(st->st_state)
 		&& (st->st_seen_vendorid & LELEM(VID_NORTEL)))
 	    {
-		change_state(st, STATE_MAIN_R3);    /* ISAKMP is up... */
+                change_state(md->transition_state, STATE_MAIN_R3);    /* ISAKMP is up... */
 	        set_cur_state(st);
 	        quick_outI1(st->st_whack_sock, st, st->st_connection, st->st_connection->policy, 1, SOS_NOBODY
                                , NULL /* Setting NULL as this is responder and will not have sec ctx from a flow*/
@@ -2412,34 +2417,36 @@ complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
 	     * whatever retrying was in place, remains in place.
 	     */
 	    whack_log(RC_NOTIFICATION + md->note
-		, "%s: %s", enum_name(&state_names, st->st_state)
+		, "%s: %s", enum_name(&state_names, from_state)
 		, enum_name(&ipsec_notification_names, md->note));
 
 	    if(md->note > 0) {
 		SEND_NOTIFICATION(md->note);
 	    }
 
-	    DBG(DBG_CONTROL,
-		DBG_log("state transition function for %s failed: %s whack_fd: %u"
-			, enum_name(&state_names, from_state)
-			, enum_name(&ipsec_notification_names, md->note)
-                        , st->st_whack_sock
-                        ));
+            if( st ) {
+                DBG(DBG_CONTROL,
+                    DBG_log("state transition function for %s failed: %s whack_fd: %u"
+                            , enum_name(&state_names, from_state)
+                            , enum_name(&ipsec_notification_names, md->note)
+                            , st->st_whack_sock
+                            ));
 #ifdef HAVE_NM
-           if (st->st_connection->remotepeertype == CISCO
-               && st->st_connection->nmconfigured) {
-                if(!do_command(st->st_connection, &st->st_connection->spd, "disconnectNM", st)) {
-                DBG(DBG_CONTROL, DBG_log("sending disconnect to NM failed, you may need to do it manually"));
+                if (st->st_connection->remotepeertype == CISCO
+                    && st->st_connection->nmconfigured) {
+                    if(!do_command(st->st_connection, &st->st_connection->spd, "disconnectNM", st)) {
+                        DBG(DBG_CONTROL, DBG_log("sending disconnect to NM failed, you may need to do it manually"));
+                    }
                 }
-           }
 #endif
-	    if(st!=NULL && IS_PHASE1_INIT(st->st_state)) {
-		delete_event(st);
-		release_whack(st);
+                if(IS_PHASE1_INIT(st->st_state)) {
+                    delete_event(st);
+                    release_whack(st);
+                }
+                if(IS_QUICK(st->st_state)) {
+                    delete_state(st);
+                }
             }
-	    if(st!=NULL && IS_QUICK(st->st_state)) {
-		delete_state(st);
-	    }
             break;
     }
 

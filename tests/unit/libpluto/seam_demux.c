@@ -2,23 +2,30 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 
+#include "pluto/log.h"
+#include "id.h"
+
 pb_stream      reply_stream;
 time_t         packet_time=0;
 pcap_dumper_t *packet_save = NULL;
+
+void send_packet_close(void)
+{
+  if(packet_save != NULL) {
+    pcap_dump_close(packet_save);
+    packet_save = NULL;
+  }
+}
 
 void send_packet_setup_pcap(char *file)
 {
 	pcap_t *pt;
 
-        if(packet_save != NULL) {
-          pcap_dump_close(packet_save);
-          packet_save = NULL;
-        }
+        send_packet_close();
 
 	pt = pcap_open_dead(DLT_NULL, 9000);
 	packet_save = pcap_dump_open(pt, file);
 }
-
 
 bool
 send_packet(struct state *st, const char *where, bool verbose)
@@ -93,3 +100,12 @@ complete_state_transition(struct msg_digest **mdp, stf_status result)
 	fprintf(stderr, "transitioning on result: %s\n"
 		, enum_name(&stfstatus_name, result));
 }
+
+#ifndef INCLUDE_IKEV1_PROCESSING
+void
+complete_v1_state_transition(struct msg_digest **mdp, stf_status result)
+{
+	fprintf(stderr, "v1 transitioning on result: %s\n"
+		, enum_name(&stfstatus_name, result));
+}
+#endif

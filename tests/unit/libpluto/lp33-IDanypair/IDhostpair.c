@@ -20,6 +20,7 @@
 #include "seam_vendor.c"
 #include "seam_fakevendor.c"
 #include "seam_pending.c"
+#include "seam_initiate.c"
 #include "seam_ikev1.c"
 #include "seam_crypt.c"
 #include "seam_kernel.c"
@@ -52,7 +53,7 @@ static void init_fake_secrets(void)
     osw_load_preshared_secrets(&pluto_secrets
 			       , TRUE
 			       , "biggate.secrets"
-			       , NULL);
+			       , NULL, NULL);
 }
 
 int main(int argc, char *argv[])

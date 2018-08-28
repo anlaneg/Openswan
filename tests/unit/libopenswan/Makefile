@@ -18,5 +18,15 @@ include ${OPENSWANSRCDIR}/Makefile.inc
 
 clean check:
 	@${MAKE} -C lo01-sameid $@
+	@${MAKE} -C lo02-verifysigs $@
+	@${MAKE} -C lo03-includesecrets $@
+	@${MAKE} -C lo04-verifypubkeys  $@
+	@${MAKE} -C lo05-datatot        $@
+	@${MAKE} -C lo06-verifybadsigs $@
+	@${MAKE} -C lo07-bleichenbacher-attack $@
+
+
+
+
 
 

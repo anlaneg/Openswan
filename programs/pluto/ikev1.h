@@ -44,27 +44,30 @@ extern bool ship_KE(struct state *st
 extern stf_status main_outI1(int whack_sock
 			     , struct connection *c
 			     , struct state *predecessor
+                             , so_serial_t  *newstateno
 			     , lset_t policy
 			     , unsigned long try
 			     , enum crypto_importance importance
                              , struct xfrm_user_sec_ctx_ike * uctx
 			     );
 
-extern stf_status aggr_outI1(int whack_sock,
-			     struct connection *c,
-			     struct state *predecessor,
-			     lset_t policy,
-			     unsigned long try
+extern stf_status aggr_outI1(int whack_sock
+                             , struct connection *c
+                             , struct state *predecessor
+                             , so_serial_t  *newstateno
+                             , lset_t policy
+                             , unsigned long try
 			     , enum crypto_importance importance
 			     , struct xfrm_user_sec_ctx_ike * uctx
 			     );
 
-extern stf_status aggr_not_present(int whack_sock,
-			     struct connection *c,
-			     struct state *predecessor,
-			     lset_t policy,
-			     unsigned long try
-			     , enum crypto_importance importance);
+extern stf_status aggr_not_present(int whack_sock
+                                   , struct connection *c
+                                   , struct state *predecessor
+                                   , so_serial_t  *newstateno
+                                   , lset_t policy
+                                   , unsigned long try
+                                   , enum crypto_importance importance);
 
 extern void ikev1_delete_out(struct state *st);
 
@@ -147,6 +150,6 @@ aggr_id_and_auth(struct msg_digest *md
 }
 
 extern bool
-do_command(struct connection *c, struct spd_route *sr
+do_command(struct connection *c, const struct spd_route *sr
            , const char *verb, struct state *st);
 #endif

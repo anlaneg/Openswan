@@ -31,6 +31,7 @@ SUBDIRS?=lib programs
 
 clean::
 	-(cd ${OPENSWANSRCDIR} && $(MAKE) modclean && $(MAKE) mod26clean)
+	-${MAKE} -C tests clean
 
 distclean:	clean
 	rm -f out.kpatch
@@ -73,8 +74,8 @@ version:
 baseversion:
 	@echo ${IPSECBASEVERSION}
 
-packagingprep: 
-	sed "s/IPSECBASEVERSION/${IPSECBASEVERSION}/" debian/changelog.in > debian/changelog
+packagingprep:
+	sed "s/DEBIAN_VER/${DEBIAN_VER}/" debian/changelog.in > debian/changelog
 	cp debian/changelog debian/NEWS
 	@for spec in packaging/*/openswan.spec.in; do \
 		f=$$(basename $$spec .in); d=$$(dirname $$spec); \
@@ -88,7 +89,7 @@ distarchive: packagingprep
 
 # USE_ variables determine if features are compiled into Openswan.
 # export them so that "make env" can get at them
-export USE_LWRES USE_IPSECPOLICY USE_IKEPING
+export USE_IPSECPOLICY USE_IKEPING
 export USE_KEYRR USE_KLIPS USE_NETKEY USE_VENDORID
 export USE_AGGRESSIVE USE_XAUTH USE_XAUTHPAM
 export USE_NAT_TRAVERSAL USE_NAT_TRAVERSAL_TRANSPORT_MODE USE_LDAP

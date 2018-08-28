@@ -660,6 +660,7 @@ passert_fail(const char *pred_str, const char *file_str, unsigned long line_no)
     {
 	dying_breath = TRUE;
 	show_status();
+        timer_list();
     }
     /* exiting correctly doesn't always work */
     openswan_log_abort(file_str, line_no);
@@ -949,7 +950,7 @@ connection_state(struct state *st, void *data)
 		return;
 
 	if (st->st_connection != lc->conn) {
-		if (lc->conn->host_pair != st->st_connection->host_pair ||
+		if (lc->conn->IPhost_pair != st->st_connection->IPhost_pair ||
 			!same_peer_ids(lc->conn, st->st_connection, NULL))
 		    return;
 		/* phase1 is shared with another connnection */

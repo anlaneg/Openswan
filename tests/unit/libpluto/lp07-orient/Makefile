@@ -79,21 +79,28 @@ programs ${TESTNAME}: ${TESTNAME}.c
 	@${CC} -g -O0 -o ${TESTNAME} ${TESTNAME}.o ${EXTRAFLAGS} ${EXTRALIBS}
 	@echo "  "CC ${TESTNAME}
 
-check:	${WHACKFILE} ${TESTNAME}
-	@mkdir -p OUTPUT
+check:	${WHACKFILE} ${TESTNAME} OUTPUT
 	@echo "file ${TESTNAME}"          >.gdbinit
 	@echo "set args "${UNITTESTARGS} >>.gdbinit
 	ulimit -c unlimited && ./${TESTNAME} ${UNITTESTARGS} >OUTPUT/${TESTNAME}.txt 2>&1
 	@sed -f ${TESTUTILS}/leak-detective.sed -f ${TESTUTILS}/whack-processing.sed OUTPUT/${TESTNAME}.txt | diff - output.txt
 
-${WHACKFILE}:
+OUTPUT:
 	@mkdir -p OUTPUT
-	${READWRITE} --rootdir=${SAMPLEDIR}/parker --config ${SAMPLEDIR}/${ENDNAME}.conf --whackout=${WHACKFILE} parker1--jj2 ikev2:parker--jj
+
+
+ifeq (${WHACKREFFILE},)
+${WHACKFILE}: OUTPUT
+	${READWRITE} --rootdir=${SAMPLEDIR}/${ENDNAME} --config ${SAMPLEDIR}/${ENDNAME}.conf --whackout=${WHACKFILE} ${CONNNAME}
+else
+${WHACKFILE}: ${WHACKREFFILE} OUTPUT
+	cp ${WHACKREFFILE} ${WHACKFILE}
+endif
 
 update:
 	sed -f ${TESTUTILS}/leak-detective.sed -f ${TESTUTILS}/whack-processing.sed OUTPUT/${TESTNAME}.txt >output.txt
 
 clean:
-	rm -f ${TESTNAME} ${WHACKFILE}
+	rm -f ${TESTNAME} ${WHACKFILE} *.o
 
 

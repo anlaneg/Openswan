@@ -18,20 +18,23 @@ include ${OPENSWANSRCDIR}/Makefile.inc
 
 PLUTOBIN=${OBJDIRTOP}/programs/pluto/pluto
 ADDCONN=${OBJDIRTOP}/programs/addconn/addconn
-WHACKBIN=${OBJDIRTOP}/programs/pluto/whack
+WHACKBIN=${OBJDIRTOP}/programs/whack/whack
 SAMPLES=${OPENSWANSRCDIR}/tests/unit/libpluto/samples
 CTLBASE=--ctlbase OUTPUT/base
 SOCKETS=--interface 127.0.0.1 --ikeport 7500 --stderrlog --use-nostack --ipsecdir=`pwd`/OUTPUT
 OUTPUTS=OUTPUT
 
 step1:
+	@rm -f OUTPUT/base.pid
+	@echo "file ${PLUTOBIN}" >.gdbinit
+	@echo "set args --nhelpers 1 ${CTLBASE} ${SOCKETS}" >.gdbinit
 	@${PLUTOBIN} --nhelpers 1 ${CTLBASE} ${SOCKETS} 2>&1
 
 step2:
-	@${ADDCONN} --verbose ${CTLBASE} --config ${SAMPLES}/rw.conf --rootdir ${SAMPLES}/rw gateway--any
+	@${ADDCONN} --verbose ${CTLBASE} --config ${SAMPLES}/rw.conf --rootdir ${SAMPLES}/rw gateway--any        >&2
 
 step2b:
-	@${ADDCONN} --verbose ${CTLBASE} --config ../07-sourceipv6/green.conf --rootdir ../07-sourceipv6 green
+	@${ADDCONN} --verbose ${CTLBASE} --config ../07-sourceipv6/green.conf --rootdir ../07-sourceipv6 green   >&2
 
 step3:
 	@${WHACKBIN} ${CTLBASE} --shutdown
@@ -50,4 +53,6 @@ OUTPUT:
 update:
 	sed -r -f ${TESTUTILS}/openswanver.sed -f ./removehelpers.sed -f ${TESTUTILS}/randomhelper.sed ${OUTPUTS}/pluto.addconn.raw >pluto.addconn.out
 
+clean:
+	rm -rf OUTPUT OUTPUT.pid
 

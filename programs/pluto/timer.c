@@ -514,12 +514,10 @@ handle_next_timer_event(void)
 	    break;
 #endif
 
-#ifdef DYNAMICDNS
         case EVENT_PENDING_DDNS:
 	    passert(st == NULL);
 	    connection_check_ddns();
 	    break;
-#endif
 
         case EVENT_PENDING_PHASE2:
 	    passert(st == NULL);
@@ -667,9 +665,12 @@ handle_next_timer_event(void)
 	    break;
 
         case EVENT_SA_DELETE:
-	    passert(st == NULL);
-	    DBG(DBG_CONTROL, DBG_log("event EVENT_SA_DELETE --- no reply to delete"));
-            delete_state(st);
+            if(st != NULL) {
+                DBG(DBG_CONTROL, DBG_log("event EVENT_SA_DELETE --- no reply to delete"));
+                delete_state(st);
+            } else {
+                DBG(DBG_CONTROL, DBG_log("event EVENT_SA_DELETE for state already NULL"));
+            }
 	    break;
 
 	default:
@@ -702,11 +703,12 @@ next_event(void)
 	    DBG_log("next event %s in %ld seconds"
 		, enum_show(&timer_event_names, evlist->ev_type)
 		, (long)evlist->ev_time - (long)tm);
-	else
-	    DBG_log("next event %s in %ld seconds for #%lu"
+	else {
+	    DBG_log("next event %s in %ld seconds for #%lu (%s)"
 		, enum_show(&timer_event_names, evlist->ev_type)
 		, (long)evlist->ev_time - (long)tm
-		, evlist->ev_state->st_serialno));
+                    , evlist->ev_state->st_serialno, oswtimestr()));
+        }
 
     if (evlist->ev_time - tm <= 0)
 	return 0;

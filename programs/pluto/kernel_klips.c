@@ -230,6 +230,7 @@ add_entry:
 
 		    q->ip_addr = ifp->addr;
 		    q->fd = fd;
+                    init_iface_port(q);
 		    q->next = interfaces;
 		    q->change = IFN_ADD;
 		    q->port = pluto_port500;
@@ -265,6 +266,7 @@ add_entry:
 			q->port = pluto_port4500;
 			setportof(htons(q->port), &q->ip_addr);
 			q->fd = fd;
+                        init_iface_port(q);
 			q->next = interfaces;
 			q->change = IFN_ADD;
 			q->ike_float = TRUE;
@@ -315,34 +317,12 @@ add_entry:
 }
 
 static bool
-klips_do_command(struct connection *c, struct spd_route *sr
-		 , const char *verb, struct state *st)
+klips_do_command(struct connection *c, const struct spd_route *sr
+		 , const char *verb, const char *verb_suffix
+                 , struct state *st)
 {
     char cmd[2048];     /* arbitrary limit on shell command length */
     char common_shell_out_str[2048];
-    const char *verb_suffix;
-
-    /* figure out which verb suffix applies */
-    {
-        const char *hs, *cs;
-
-        switch (addrtypeof(&sr->this.host_addr))
-        {
-            case AF_INET:
-                hs = "-host";
-                cs = "-client";
-                break;
-            case AF_INET6:
-                hs = "-host-v6";
-                cs = "-client-v6";
-                break;
-            default:
-                loglog(RC_LOG_SERIOUS, "unknown address family");
-                return FALSE;
-        }
-        verb_suffix = subnetisaddr(&sr->this.client, &sr->this.host_addr)
-            ? hs : cs;
-    }
 
     if(fmt_common_shell_out(common_shell_out_str, sizeof(common_shell_out_str), c, sr, st)==-1) {
 	loglog(RC_LOG_SERIOUS, "%s%s command too long!", verb, verb_suffix);

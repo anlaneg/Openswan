@@ -169,6 +169,7 @@ bsdkame_process_raw_ifaces(struct raw_iface *rifaces)
 
 		    q->ip_addr = ifp->addr;
 		    q->fd = fd;
+                    init_iface_port(q);
 		    q->next = interfaces;
 		    q->change = IFN_ADD;
 		    q->port = pluto_port500;
@@ -205,6 +206,7 @@ bsdkame_process_raw_ifaces(struct raw_iface *rifaces)
 			q->port = NAT_T_IKE_FLOAT_PORT;
 			q->fd = fd;
 			q->next = interfaces;
+                        init_iface_port(q);
 			q->change = IFN_ADD;
 			q->ike_float = TRUE;
 			interfaces = q;
@@ -255,33 +257,11 @@ bsdkame_process_raw_ifaces(struct raw_iface *rifaces)
 
 static bool
 bsdkame_do_command(struct connection *c, struct spd_route *sr
-		 , const char *verb, struct state *st)
+                   , const char *verb, const char *verb_suffix
+                   , struct state *st)
 {
     char cmd[1536];     /* arbitrary limit on shell command length */
     char common_shell_out_str[1024];
-    const char *verb_suffix;
-
-    /* figure out which verb suffix applies */
-    {
-        const char *hs, *cs;
-
-        switch (addrtypeof(&sr->this.host_addr))
-        {
-            case AF_INET:
-                hs = "-host";
-                cs = "-client";
-                break;
-            case AF_INET6:
-                hs = "-host-v6";
-                cs = "-client-v6";
-                break;
-            default:
-                loglog(RC_LOG_SERIOUS, "unknown address family");
-                return FALSE;
-        }
-        verb_suffix = subnetisaddr(&sr->this.client, &sr->this.host_addr)
-            ? hs : cs;
-    }
 
     if(fmt_common_shell_out(common_shell_out_str, sizeof(common_shell_out_str), c, sr, st)==-1) {
 	loglog(RC_LOG_SERIOUS, "%s%s command too long!", verb, verb_suffix);
@@ -627,7 +607,7 @@ bsdkame_raw_eroute(const ip_address *this_host
  */
 static bool
 bsdkame_shunt_eroute(struct connection *c
-		     , struct spd_route *sr
+		     , const struct spd_route *sr
 		     , enum routing_t rt_kind
 		     , enum pluto_sadb_operations op
 		     , const char *opname)
@@ -893,7 +873,7 @@ bsdkame_shunt_eroute(struct connection *c
  */
 static bool
 bsdkame_sag_eroute(struct state *st
-		   , struct spd_route *sr
+		   , const struct spd_route *sr
 		   , unsigned op UNUSED
 		   , const char *opname UNUSED)
 {

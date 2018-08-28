@@ -45,13 +45,23 @@ stf_status start_dh_v2(struct pluto_crypto_req_cont *cn
 }
 
 
+void run_one_continuation(struct pluto_crypto_req *r)
+{
+  struct pluto_crypto_req_cont *cn = continuation;
+  continuation = NULL;
+
+  if(cn) {
+    (*cn->pcrc_func)(cn, r, NULL);
+  } else {
+    fprintf(stderr, "should have found a continuation, but none was found\n");
+  }
+}
+
 void run_continuation(struct pluto_crypto_req *r)
 {
-	while(continuation != NULL) {
-		struct pluto_crypto_req_cont *cn = continuation;
-		continuation = NULL;
-		(*cn->pcrc_func)(cn, r, NULL);
-	}
+  while(continuation != NULL) {
+    run_one_continuation(r);
+  }
 }
 
 bool ikev2_calculate_rsa_sha1(struct state *st
@@ -59,7 +69,10 @@ bool ikev2_calculate_rsa_sha1(struct state *st
 			      , unsigned char *idhash
 			      , pb_stream *a_pbs)
 {
+  static int fakesig = 1;
+
 	out_zero(192, a_pbs, "fake rsa sig");
+        snprintf(st->st_our_keyid, sizeof(st->st_our_keyid), "fakesig%u", fakesig++);
 	return TRUE;
 }
 
@@ -89,11 +102,14 @@ ikev2_verify_rsa_sha1(struct state *st
 			    , const struct gw_info *gateways_from_dns
 			    , pb_stream *sig_pbs)
 {
+  static int fakecheck = 1;
   struct pubkey_list *p, **pp;
   struct connection *c = st->st_connection;
   int pathlen;
 
   pp = &pluto_pubkeys;
+
+  snprintf(st->st_their_keyid, sizeof(st->st_their_keyid), "fakecheck%u", fakecheck++);
 
   {
 
@@ -122,7 +138,7 @@ ikev2_verify_rsa_sha1(struct state *st
               , same_id(&st->ikev2.st_peer_id, &key->id));
       if (key->alg == PUBKEY_ALG_RSA
           && same_id(&st->ikev2.st_peer_id, &key->id)
-          && trusted_ca(key->issuer, c->spd.that.ca, &pathlen))
+          && (key->dns_auth_level > DAL_UNSIGNED || trusted_ca(key->issuer, c->spd.that.ca, &pathlen)))
         {
           time_t tnow;
 
@@ -145,6 +161,7 @@ ikev2_verify_rsa_sha1(struct state *st
         }
     }
 
+  list_public_keys(TRUE, FALSE);
   return STF_FAIL + INVALID_KEY_INFORMATION;
 }
 

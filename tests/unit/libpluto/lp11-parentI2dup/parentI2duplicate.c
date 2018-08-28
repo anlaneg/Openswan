@@ -31,6 +31,7 @@
 #include "seam_demux.c"
 #include "seam_commhandle.c"
 #include "seam_whack.c"
+#include "seam_initiate.c"
 #include "seam_keys.c"
 #include "seam_exitlog.c"
 #include "seam_natt.c"
@@ -97,7 +98,7 @@ int main(int argc, char *argv[])
     init_crypto();
     load_oswcrypto();
     init_fake_vendorid();
-    init_parker_interface();
+    init_parker_interface(TRUE);
 
     infile = argv[0];
     conn_name = argv[1];

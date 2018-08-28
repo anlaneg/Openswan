@@ -1,4 +1,8 @@
 #include "parentI1_head.c"
+#include "seam_pending.c"
+#include "seam_whack.c"
+#include "seam_initiate.c"
+#include "seam_dnskey.c"
 #include "seam_x509.c"
 #include "seam_keys.c"
 
@@ -7,7 +11,7 @@
 
 static void init_local_interface(void)
 {
-    init_parker_interface();
+    init_parker_interface(TRUE);
 }
 
 static void init_fake_secrets(void)
@@ -15,7 +19,7 @@ static void init_fake_secrets(void)
     osw_load_preshared_secrets(&pluto_secrets
 			       , TRUE
 			       , "../samples/parker.secrets"
-			       , NULL);
+			       , NULL, NULL);
 }
 
 #include "parentI1_main.c"

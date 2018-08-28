@@ -1215,7 +1215,7 @@ pfkey_close(void)
  */
 bool
 pfkey_shunt_eroute(struct connection *c
-		   , struct spd_route *sr
+		   , const struct spd_route *sr
 		   , enum routing_t rt_kind
 		   , enum pluto_sadb_operations op, const char *opname)
 {
@@ -1342,15 +1342,18 @@ pfkey_shunt_eroute(struct connection *c
     }
 }
 
+#define PROTO_COUNT 4
+
 /* install or remove eroute for SA Group */
 bool
-pfkey_sag_eroute(struct state *st, struct spd_route *sr
+pfkey_sag_eroute(struct state *st, const struct spd_route *sr
 		 , unsigned op, const char *opname)
 {
     unsigned int inner_proto;
     enum eroute_type inner_esatype;
     ipsec_spi_t inner_spi;
-    struct pfkey_proto_info proto_info[4];
+#define PROTO_INFO_COUNT 4
+    struct pfkey_proto_info proto_info[PROTO_INFO_COUNT];
     int i;
     bool tunnel;
 
@@ -1419,7 +1422,7 @@ pfkey_sag_eroute(struct state *st, struct spd_route *sr
         inner_esatype = ET_IPIP;
 
         proto_info[i].encapsulation = ENCAPSULATION_MODE_TUNNEL;
-        for (j = i + 1; proto_info[j].proto; j++)
+        for (j = i + 1; j < PROTO_INFO_COUNT && proto_info[j].proto; j++)
         {
             proto_info[j].encapsulation = ENCAPSULATION_MODE_TRANSPORT;
         }
@@ -1522,7 +1525,7 @@ scan_proc_shunts(void)
         struct eroute_info *p = orphaned_holds;
 
         orphaned_holds = p->next;
-        pfree(orphaned_holds);
+        pfree(p);
     }
 
     /* decode the /proc file.  Don't do anything strenuous to it

@@ -36,6 +36,8 @@
 
 #include "oswalloc.h"
 #include "libopenswan.h"
+#include "secrets.h"
+#include "oswkeys.h"
 
 #include "ipsecconf/parser.h"
 #include "ipsecconf/files.h"
@@ -131,22 +133,17 @@ void ipsecconf_default_values(struct starter_config *cfg)
 	/* now here is a sticker.. we want it on. But pluto has to be smarter first */
 	cfg->conn_default.options[KBF_OPPOENCRYPT] = FALSE;
 
-	cfg->conn_default.options[KBF_CONNADDRFAMILY] = AF_INET;
+	cfg->conn_default.options[KBF_CLIENTADDRFAMILY] = AF_INET;
 
-	cfg->conn_default.left.addr_family = AF_INET;
+	cfg->conn_default.left.end_addr_family = AF_INET;
 	anyaddr(AF_INET, &cfg->conn_default.left.addr);
 	cfg->conn_default.left.nexttype  = KH_NOTSET;
 	anyaddr(AF_INET, &cfg->conn_default.left.nexthop);
 
-	cfg->conn_default.right.addr_family = AF_INET;
+	cfg->conn_default.right.end_addr_family = AF_INET;
 	anyaddr(AF_INET, &cfg->conn_default.right.addr);
 	cfg->conn_default.right.nexttype = KH_NOTSET;
 	anyaddr(AF_INET, &cfg->conn_default.right.nexthop);
-
-	/* default is to look in DNS */
-	cfg->conn_default.left.key_from_DNS_on_demand = TRUE;
-	cfg->conn_default.right.key_from_DNS_on_demand = TRUE;
-
 
 	cfg->conn_default.options[KBF_AUTO] = STARTUP_NO;
 	cfg->conn_default.state = STATE_LOADED;
@@ -267,80 +264,80 @@ static char **new_list(char *value)
 static bool load_setup(struct starter_config *cfg,
 		      struct config_parsed *cfgp)
 {
-	bool err = FALSE;
-	struct kw_list *kw;
+    bool err = FALSE;
+    struct kw_list *kw;
 
-	for (kw = cfgp->config_setup; kw; kw = kw->next) {
+    for (kw = cfgp->config_setup; kw; kw = kw->next) {
 
-		/**
-		 * the parser already made sure that only config keywords were used,
-		 * but we double check!
-		 */
-		assert(kw->keyword.keydef->validity & kv_config);
+        /**
+         * the parser already made sure that only config keywords were used,
+         * but we double check!
+         */
+        assert(kw->keyword.keydef->validity & kv_config);
 
-		switch (kw->keyword.keydef->type) {
-		case kt_string:
-		case kt_filename:
-		case kt_dirname:
-		case kt_loose_enum:
-			/* all treated as strings for now */
-			assert(kw->keyword.keydef->field <
-			       sizeof(cfg->setup.strings));
-			pfreeany(cfg->setup.strings[kw->keyword.keydef->
-							field]);
-			cfg->setup.strings[kw->keyword.keydef->field] =
-				clone_str(kw->string, "kt_loose_enum kw->string");
-			cfg->setup.strings_set[kw->keyword.keydef->field] =
-				TRUE;
-			break;
+        if(kw->keyword.keydef->validity & kv_obsolete) {
+            starter_log(LOG_LEVEL_INFO,
+                        "Warning: obsolete keyword '%s' ignored on read",
+                        kw->keyword.keydef->keyname);
+        }
 
-		case kt_list:
-		case kt_bool:
-		case kt_invertbool:
-		case kt_enum:
-		case kt_number:
-		case kt_time:
-		case kt_percent:
-			/* all treated as a number for now */
-			assert(kw->keyword.keydef->field <
-			       sizeof(cfg->setup.options));
-			cfg->setup.options[kw->keyword.keydef->field] =
-				kw->number;
-			cfg->setup.options_set[kw->keyword.keydef->field] =
-				TRUE;
-			break;
+        switch (kw->keyword.keydef->type) {
+        case kt_string:
+        case kt_filename:
+        case kt_dirname:
+        case kt_loose_enum:
+        case kt_loose_enumarg:
+            /* all treated as strings for now */
+            assert(kw->keyword.keydef->field < sizeof(cfg->setup.strings));
+            pfreeany(cfg->setup.strings[kw->keyword.keydef->field]);
+            cfg->setup.strings[kw->keyword.keydef->field] =
+                clone_str(kw->keyword.string, "kt_loose_enum kw->keyword.string");
+            cfg->setup.strings_set[kw->keyword.keydef->field] =TRUE;
+            break;
 
-		case kt_bitstring:
-		case kt_rsakey:
-		case kt_ipaddr:
-		case kt_subnet:
-                /* case kt_range: */
-		case kt_idtype:
-			err = TRUE;
-			break;
+        case kt_list:
+        case kt_bool:
+        case kt_invertbool:
+        case kt_enum:
+        case kt_number:
+        case kt_time:
+        case kt_percent:
+            /* all treated as a number for now */
+            assert(kw->keyword.keydef->field <
+                   sizeof(cfg->setup.options));
+            cfg->setup.options[kw->keyword.keydef->field] =
+                kw->number;
+            cfg->setup.options_set[kw->keyword.keydef->field] =
+                TRUE;
+            break;
 
-		case kt_comment:
-			break;
+        case kt_bitstring:
+        case kt_rsakey:
+        case kt_ipaddr:
+        case kt_subnet:
+            /* case kt_range: */
+        case kt_idtype:
+            err = TRUE;
+            break;
 
-		case kt_obsolete:
-			starter_log(LOG_LEVEL_INFO,
-				    "Warning: ignored obsolete keyword '%s'",
-				    kw->keyword.keydef->keyname);
-			break;
-		default:
-		    /* NEVER HAPPENS */
-		    break;
-		}
-	}
+        case kt_appendstring:
+        case kt_appendlist:
+            /* XXX not yet implemented */
+            break;
+        case kt_comment:
+            break;
 
-	/* now process some things with specific values */
+        }
+    }
 
-	/* interfaces has to be chopped up */
-	if (cfg->setup.interfaces)
-		FREE_LIST(cfg->setup.interfaces);
-	cfg->setup.interfaces = new_list(cfg->setup.strings[KSF_INTERFACES]);
+    /* now process some things with specific values */
 
-	return err;
+    /* interfaces has to be chopped up */
+    if (cfg->setup.interfaces)
+        FREE_LIST(cfg->setup.interfaces);
+    cfg->setup.interfaces = new_list(cfg->setup.strings[KSF_INTERFACES]);
+
+    return err;
 }
 
 /**
@@ -365,7 +362,8 @@ static bool validate_end(struct starter_conn *conn_st
     err_t er = NULL;
     char *err_str = NULL;
     const char *leftright=(left ? "left" : "right");
-    int family = conn_st->options[KBF_CONNADDRFAMILY];
+    int family;
+    int newfamily;
     bool err = FALSE;
 
 #define ERR_FOUND(args...) do { err += error_append(&err_str, ##args); } while(0)
@@ -374,8 +372,14 @@ static bool validate_end(struct starter_conn *conn_st
 	conn_st->state = STATE_INCOMPLETE;
     }
 
+    family = AF_UNSPEC;
+    if(conn_st->options_set[KBF_ENDADDRFAMILY]) {
+	    family = conn_st->options[KBF_ENDADDRFAMILY];
+    }
+
     end->addrtype=end->options[KNCF_IP];
-    end->addr_family = family;
+    end->end_addr_family = family;
+    newfamily = family;
 
     /* validate the KSCF_IP/KNCF_IP */
     switch(end->addrtype) {
@@ -389,6 +393,7 @@ static bool validate_end(struct starter_conn *conn_st
 	break;
 
     case KH_IPADDR:
+        /* right=/left= */
 	assert(end->strings[KSCF_IP] != NULL);
 
 	if (end->strings[KSCF_IP][0]=='%') {
@@ -403,7 +408,19 @@ static bool validate_end(struct starter_conn *conn_st
 	    break;
 	}
 
-        er = ttoaddr_num(end->strings[KNCF_IP], 0, family, &(end->addr));
+	er = ttoaddr_num(end->strings[KNCF_IP], 0, AF_INET6, &(end->addr));
+	if(er == NULL) { /* no error! */
+		newfamily = AF_INET6;
+	} else { /* error */
+		er = ttoaddr_num(end->strings[KNCF_IP], 0, AF_INET, &(end->addr));
+		if(er == NULL) {
+			newfamily = AF_INET;
+		}
+	}
+	if(family == 0) {
+		end->end_addr_family = newfamily;
+	}
+
 	if(er) {
 	    /* not numeric, so set the type to the string type */
 	    end->addrtype = KH_IPHOSTNAME;
@@ -430,7 +447,7 @@ static bool validate_end(struct starter_conn *conn_st
 	break;
 
     case KH_IPHOSTNAME:
-	/* generally, this doesn't show up at this stage */
+        /* XXX */
 	break;
 
     case KH_DEFAULTROUTE:
@@ -444,6 +461,11 @@ static bool validate_end(struct starter_conn *conn_st
     if(end->strings_set[KSCF_SUBNET])
     {
 	char *value = end->strings[KSCF_SUBNET];
+	unsigned int client_family = AF_UNSPEC;
+
+	if(conn_st->tunnel_addr_family != 0) {
+	    client_family = conn_st->tunnel_addr_family;
+        }
 
         if ( ((strlen(value)>=6) && (strncmp(value,"vhost:",6)==0)) ||
 	     ((strlen(value)>=5) && (strncmp(value,"vnet:",5)==0)) ) {
@@ -452,9 +474,13 @@ static bool validate_end(struct starter_conn *conn_st
 	}
 	else {
 	    end->has_client = TRUE;
-	    er = ttosubnet(value, 0, 0, &(end->subnet));
+	    er = ttosubnet(value, 0, client_family, &(end->subnet));
+            client_family = end->subnet.addr.u.v4.sin_family;
 	}
+
 	if (er) ERR_FOUND("bad subnet %ssubnet=%s [%s] family=%s", leftright, value, er, family2str(family));
+
+        end->tunnel_addr_family = client_family;
     }
 
     /* set nexthop address to something consistent, by default */
@@ -499,27 +525,43 @@ static bool validate_end(struct starter_conn *conn_st
 	end->rsakey2_type = end->options[KSCF_RSAKEY2];
 
 	switch(end->rsakey1_type) {
+        case PUBKEY_NOTSET:
+            /* really should not happen! */
+            break;
+
 	case PUBKEY_DNS:
 	case PUBKEY_DNSONDEMAND:
-	    end->key_from_DNS_on_demand = TRUE;
+        case PUBKEY_CERTIFICATE:
+            /* pass it on */
 	    break;
 
-	default:
-	    end->key_from_DNS_on_demand = FALSE;
+        case PUBKEY_PREEXCHANGED:
 	    /* validate the KSCF_RSAKEY1/RSAKEY2 */
-	    if(end->strings[KSCF_RSAKEY1] != NULL)
+	    if(end->strings_set[KSCF_RSAKEY1])
 	    {
 		char *value = end->strings[KSCF_RSAKEY1];
+                osw_public_key opk1;
+                zero(&opk1);
 
                 pfreeany(end->rsakey1);
                 end->rsakey1 = (unsigned char *)clone_str(value,"end->rsakey1");
+                if(str2pubkey(end->rsakey1, PUBKEY_ALG_RSA, &opk1) == NULL) {
+                    end->rsakey1_ckaid = clone_str(opk1.key_ckaid_print_buf, "end->rsakey1_ckaid");
+                    free_RSA_public_content(&opk1.u.rsa);
+                }
 	    }
-	    if(end->strings[KSCF_RSAKEY2] != NULL)
+	    if(end->strings_set[KSCF_RSAKEY2])
 	    {
 		char *value = end->strings[KSCF_RSAKEY2];
+                osw_public_key opk2;
+                zero(&opk2);
 
                 pfreeany(end->rsakey2);
                 end->rsakey2 = (unsigned char *)clone_str(value,"end->rsakey2");
+                if(str2pubkey(end->rsakey2, PUBKEY_ALG_RSA, &opk2) == NULL) {
+                    end->rsakey2_ckaid = clone_str(opk2.key_ckaid_print_buf, "end->rsakey2_ckaid");
+                    free_RSA_public_content(&opk2.u.rsa);
+                }
 	    }
 	}
     }
@@ -553,10 +595,12 @@ static bool validate_end(struct starter_conn *conn_st
 
     /* copy certificate path name */
     if(end->strings_set[KSCF_CERT]) {
+        end->rsakey1_type = PUBKEY_CERTIFICATE;
         end->cert = clone_str(end->strings[KSCF_CERT], "KSCF_CERT");
     }
 
     if(end->strings_set[KSCF_CA]) {
+        end->rsakey1_type = PUBKEY_CERTIFICATE;
         end->ca = clone_str(end->strings[KSCF_CA], "KSCF_CA");
     }
 
@@ -623,25 +667,34 @@ bool translate_conn (struct starter_conn *conn
 
     for ( ; kw; kw=kw->next)
     {
+        char keyname[128];
+
 	i++;
 	the_strings = &conn->strings;
 	set_strings = &conn->strings_set;
 	the_options = &conn->options;
 	set_options = &conn->options_set;
 
-	if((kw->keyword.keydef->validity & kv_conn) == 0)
+        /* initialize with base value */
+        strcpy(keyname, kw->keyword.keydef->keyname);
+
+        if((kw->keyword.keydef->validity & kv_conn) == 0)
 	{
 	    /* this isn't valid in a conn! */
 	    *error = (const char *)tmp_err;
 
 	    snprintf(tmp_err, sizeof(tmp_err),
 		     "keyword '%s' is not valid in a conn (%s) (#%d)\n",
-		     kw->keyword.keydef->keyname, sl->name, i);
+		     keyname, sl->name, i);
 	    starter_log(LOG_LEVEL_INFO, "%s", tmp_err);
 	    continue;
 	}
 
-	if(kw->keyword.keydef->validity & kv_leftright)
+        if(kw->keyword.keydef->validity & kv_obsolete) {
+	    starter_log(LOG_LEVEL_DEBUG,"Warning: obsolete keyword %s ignored\n",kw->keyword.keydef->keyname);
+        }
+
+        if(kw->keyword.keydef->validity & kv_leftright)
 	{
             struct starter_end *left, *right;
             left  = &conn->left;
@@ -653,11 +706,13 @@ bool translate_conn (struct starter_conn *conn
 
 	    if(kw->keyword.keyleft)
 	    {
+                snprintf(keyname, sizeof(keyname), "left%s", kw->keyword.keydef->keyname);
 		the_strings = &left->strings;
 		the_options = &left->options;
 		set_strings = &left->strings_set;
 		set_options = &left->options_set;
 	    } else {
+                snprintf(keyname, sizeof(keyname), "right%s", kw->keyword.keydef->keyname);
 		the_strings = &right->strings;
 		the_options = &right->options;
 		set_strings = &right->strings_set;
@@ -669,7 +724,7 @@ bool translate_conn (struct starter_conn *conn
 
 #ifdef PARSER_TYPE_DEBUG
 	starter_log(LOG_LEVEL_DEBUG, "#analyzing %s[%d] kwtype=%d\n",
-		    kw->keyword.keydef->keyname, field,
+		    keyname, field,
 		    kw->keyword.keydef->type);
 #endif
 
@@ -689,10 +744,11 @@ bool translate_conn (struct starter_conn *conn
 	    {
 		*error = tmp_err;
 
+                /* keyname[0] test looks for left=/right= */
 		snprintf(tmp_err, sizeof(tmp_err)
-			 , "duplicate key '%s' in conn %s while processing def %s"
-			 , kw->keyword.keydef->keyname
-			 , conn->name
+			 , "duplicate string key '%s' in conn %s (line=%u) while processing def %s (ignored)"
+			 , keyname
+			 , conn->name, kw->lineno
 			 , sl->name);
 
 		starter_log(LOG_LEVEL_INFO, "%s", tmp_err);
@@ -706,17 +762,17 @@ bool translate_conn (struct starter_conn *conn
 	    }
             pfreeany((*the_strings)[field]);
 
-	    if(kw->string == NULL) {
+	    if(kw->keyword.string == NULL) {
 		*error = tmp_err;
 
 		snprintf(tmp_err, sizeof(tmp_err)
 			 , "Invalid %s value"
-			 , kw->keyword.keydef->keyname);
+			 , keyname);
 		    err++;
 		    break;
             }
 
-            (*the_strings)[field] = clone_str(kw->string,"kt_idtype kw->string");
+            (*the_strings)[field] = clone_str(kw->keyword.string,"kt_idtype kw->keyword.string");
 	    (*set_strings)[field] = assigned_value;
 	    break;
 
@@ -726,17 +782,17 @@ bool translate_conn (struct starter_conn *conn
 	    assert(kw->keyword.keydef->field < KEY_STRINGS_MAX);
 	    if(!(*the_strings)[field])
 	    {
-                (*the_strings)[field] = clone_str(kw->string, "kt_appendlist kw->string");
+                (*the_strings)[field] = clone_str(kw->keyword.string, "kt_appendlist kw->keyword.string");
 	    } else {
                 char *s = (*the_strings)[field];
                 size_t old_len = strlen(s);	/* excludes '\0' */
-                size_t new_len = strlen(kw->string);
+                size_t new_len = strlen(kw->keyword.string);
                 char *n;
 
                 n = alloc_bytes(old_len + 1 + new_len + 1, "kt_appendlist");
                 memcpy(n, s, old_len);
                 n[old_len] = ' ';
-                memcpy(n + old_len + 1, kw->string, new_len + 1);	/* includes '\0' */
+                memcpy(n + old_len + 1, kw->keyword.string, new_len + 1);	/* includes '\0' */
                 (*the_strings)[field] = n;
                 pfree(s);
 	    }
@@ -745,20 +801,15 @@ bool translate_conn (struct starter_conn *conn
 
 	case kt_rsakey:
 	case kt_loose_enum:
+	case kt_loose_enumarg:
 	    assert(field < KEY_STRINGS_MAX);
 	    assert(field < KEY_NUMERIC_MAX);
 
 	    if((*set_options)[field] == k_set)
 	    {
+                bool fatal = FALSE;
+
 		*error = tmp_err;
-		snprintf(tmp_err, sizeof(tmp_err)
-			 , "duplicate key '%s' in conn %s while processing def %s"
-			 , kw->keyword.keydef->keyname
-			 , conn->name
-			 , sl->name);
-
-		starter_log(LOG_LEVEL_INFO, "%s", tmp_err);
-
 		/* only fatal if we try to change values */
 		if((*the_options)[field] != kw->number
 		   || !((*the_options)[field] == LOOSE_ENUM_OTHER
@@ -767,9 +818,21 @@ bool translate_conn (struct starter_conn *conn
 			&& (*the_strings)[field] != NULL
 			&& strcmp(kw->keyword.string, (*the_strings)[field])==0))
 		{
+                    fatal = TRUE;
 		    err++;
-		    break;
 		}
+		snprintf(tmp_err, sizeof(tmp_err)
+			 , "duplicate loose key '%s' in conn %s (line=%u) while processing def %s%s"
+			 , keyname
+			 , conn->name, kw->lineno
+			 , sl->name, fatal ? "(FATAL!)":"");
+
+		starter_log(LOG_LEVEL_INFO, "%s", tmp_err);
+
+                if(fatal) {
+		    break;
+                }
+
 	    }
 
 	    (*the_options)[field] = kw->number;
@@ -778,7 +841,13 @@ bool translate_conn (struct starter_conn *conn
 		assert(kw->keyword.string != NULL);
                 pfreeany((*the_strings)[field]);
                 (*the_strings)[field] = clone_str(kw->keyword.string, "kt_loose_enum kw->keyword.string");
-	    }
+                (*set_strings)[field] = TRUE;
+	    } else if(kw->keyword.keydef->type == kt_loose_enumarg && kw->argument != NULL) {
+                pfreeany((*the_strings)[field]);
+                (*the_strings)[field] = clone_str(kw->argument, "kt_loose_enum kw->keyword.argument");
+                (*set_strings)[field] = TRUE;
+            }
+
 	    (*set_options)[field] = assigned_value;
 	    break;
 
@@ -795,8 +864,8 @@ bool translate_conn (struct starter_conn *conn
 	    if((*set_options)[field] == k_set)
 	    {
 		starter_log(LOG_LEVEL_INFO
-                            , "duplicate key '%s' in conn %s while processing def %s"
-                            , kw->keyword.keydef->keyname, conn->name, sl->name);
+                            , "duplicate enum key '%s' in conn %s (line=%u) while processing def %s"
+                            , keyname, conn->name, kw->lineno, sl->name);
 		if((*the_options)[field] != kw->number)
 		{
 		    err++;
@@ -805,17 +874,14 @@ bool translate_conn (struct starter_conn *conn
 	    }
 
 #if 0
-	    starter_log(LOG_LEVEL_DEBUG, "#setting %s[%d]=%u\n",
-			kw->keyword.keydef->keyname, field, kw->number);
+	    starter_log(LOG_LEVEL_DEBUG, "#setting %s[%d]=%u at line=%u\n",
+			keyname, field, kw->number, kw->lineno);
 #endif
 	    (*the_options)[field] = kw->number;
 	    (*set_options)[field] = assigned_value;
 	    break;
 
 	case kt_comment:
-	    break;
-	case kt_obsolete:
-	    starter_log(LOG_LEVEL_DEBUG,"Warning: obsolete keyword %s ignored\n",kw->keyword.keydef->keyname);
 	    break;
 	}
     }
@@ -941,6 +1007,74 @@ char **process_alsos(struct starter_config *cfg
     return alsos;
 }
 
+static int validate_family_consistency(const char *connname,
+                                       const char *addrtype,
+                                       unsigned int left,
+                                       unsigned int right,
+                                       unsigned int family)
+{
+    unsigned int nfamily = AF_LOCAL; /* an invalid value */
+
+    /* they could all be equal and consistent */
+    if(left == family && right == family) {
+        return family;
+    }
+
+    /* if right has a family, use it */
+    if(left == 0 &&
+       family      == 0 &&
+       right != 0) {
+        left = nfamily = right;
+    }
+
+    /* if left has a family, use it */
+    if(left  != 0 &&
+       family       == 0 &&
+       right == 0) {
+        right = nfamily = left;
+    }
+
+    /* if left and right are blank, then set them from family */
+    if(left  == 0 &&
+       family       != 0 &&
+       right == 0) {
+        nfamily = right = left = family;
+    }
+
+    /* if family is blank, and left and right are set to the same value,
+     * then set family to that value.
+     */
+    if(left  != 0 &&
+       family       == 0 &&
+       right != 0 &&
+       left  == right) {
+        nfamily = right;
+    }
+
+    /* they could be all unspecified, which is not inconsistent, just not useful */
+    if(left == 0 && family == 0 && right == 0) {
+        return AF_UNSPEC;
+    }
+
+    /* if the end_address family is *STILL* 0, then it must be that there is an
+       inconsistency in the left/right ends.
+    */
+    if(nfamily == AF_LOCAL) {
+        char b1[KEYWORD_NAME_BUFLEN];
+        char b2[KEYWORD_NAME_BUFLEN];
+        char b3[KEYWORD_NAME_BUFLEN];
+        starter_log(LOG_LEVEL_ERR,
+                    "%s: inconsistent left/right %s address family: policy=%s left=%s right=%s",
+                    connname,
+                    addrtype,
+                    keyword_name(&kw_connaddrfamily_list, family, b1),
+                    keyword_name(&kw_connaddrfamily_list, left, b2),
+                    keyword_name(&kw_connaddrfamily_list, right, b3));
+        return AF_UNSPEC;
+    }
+
+    return nfamily;
+}
 
 static int load_conn (struct starter_config *cfg
 		      , struct starter_conn *conn
@@ -1152,19 +1286,36 @@ static int load_conn (struct starter_config *cfg
 	}
     }
 
+    if(conn->options_set[KBF_ENDADDRFAMILY]) {
+        conn->end_addr_family = conn->options[KBF_ENDADDRFAMILY];
+    }
+    if(conn->options_set[KBF_CLIENTADDRFAMILY]) {
+        conn->tunnel_addr_family = conn->options[KBF_CLIENTADDRFAMILY];
+    }
+
     err += validate_end(conn, &conn->left,  TRUE,  resolvip, perr);
     err += validate_end(conn, &conn->right, FALSE, resolvip, perr);
-    /*
-     * TODO:
-     * verify both ends are using the same inet family, if one end
-     * is "%any" or "%defaultroute", then perhaps adjust it.
-     * ensource this for left,leftnexthop,right,rightnexthop
-     * Ideally, phase out connaddrfamily= which now wrongly assumes
-     * left,leftnextop,leftsubnet are the same inet family
-     * Currently, these tests are implicitely done, and wrongly
-     * in case of 6in4 and 4in6 tunnels
-     */
 
+    if(!defaultconn) {
+        /*
+         * At this point, the two ends should be sufficiently well declared that
+         * one can verify if the two ends are using the same address family.
+         * This is a bit more complex and just an ==, as one end may be unspecified.
+         * In that case, it should adopt the family of the other end. If both
+         * are unspecified, then this is an error, unless the conn already
+         * has an end/tunnel family specified.
+         */
+
+        conn->end_addr_family = validate_family_consistency(conn->name, "end",
+                                                            conn->left.end_addr_family,
+                                                            conn->right.end_addr_family,
+                                                            conn->end_addr_family);
+
+        conn->tunnel_addr_family = validate_family_consistency(conn->name, "tunnel",
+                                                            conn->left.tunnel_addr_family,
+                                                            conn->right.tunnel_addr_family,
+                                                            conn->tunnel_addr_family);
+    }
 
     if(conn->options_set[KBF_AUTO]) {
 	conn->desired_state = conn->options[KBF_AUTO];
@@ -1385,6 +1536,12 @@ static void confread_free_conn(struct starter_conn *conn)
     pfreeany(conn->right.id);
     pfreeany(conn->right.rsakey1);
     pfreeany(conn->right.rsakey2);
+
+    pfreeany(conn->left.rsakey1_ckaid);
+    pfreeany(conn->left.rsakey2_ckaid);
+    pfreeany(conn->right.rsakey1_ckaid);
+    pfreeany(conn->right.rsakey2_ckaid);
+
     for(i=0; i<KSCF_MAX; i++) {
         pfreeany(conn->left.strings[i]);
         pfreeany(conn->right.strings[i]);

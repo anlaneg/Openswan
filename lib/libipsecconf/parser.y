@@ -37,8 +37,9 @@
 static char parser_errstring[ERRSTRING_LEN+1];
 void yyerror(const char *s);
 extern int yylex (void);
-static struct kw_list *alloc_kwlist(void);
+static struct kw_list *alloc_kwlist(unsigned int lineno);
 static struct starter_comments *alloc_comment(void);
+static void process_keyword_equal(struct keyword kw, struct kw_list *new, const char *const_string);
 
 /**
  * Static Globals
@@ -148,7 +149,7 @@ statement_kw:
 		struct kw_list *new;
 
 		assert(_parser_kw != NULL);
-		new = alloc_kwlist();
+		new = alloc_kwlist(parser_cur_lineno());
 		if (!new) {
 		    yyerror("can't allocate memory in statement_kw");
 		} else {
@@ -157,46 +158,8 @@ statement_kw:
 	            const char *value = $3.keydef->keyname;
 
 	            kw = $1;
-		    new->keyword = kw;
 
-		    switch(kw.keydef->type) {
-		    case kt_list:
-			new->number = parser_enum_list(kw.keydef, value, TRUE);
-			break;
-	            case kt_enum:
-			new->number = parser_enum_list(kw.keydef, value, FALSE);
-			break;
-		    case kt_rsakey:
-		    case kt_loose_enum:
-			new->number = parser_loose_enum(&new->keyword, value);
-                        break;
-		    case kt_string:
-		    case kt_appendstring:
-		    case kt_appendlist:
-		    case kt_filename:
-                    case kt_dirname:
-                    case kt_ipaddr:
-                    case kt_bitstring:
-		    case kt_idtype:
-		    case kt_subnet:
-		        new->string = strdup(value);
-			break;
-
-		    case kt_bool:
-		    case kt_invertbool:
-		    case kt_number:
-		    case kt_time:
-		    case kt_percent:
-			yyerror("keyword value is a keyword, but type not a string");
-			assert(!(kw.keydef->type == kt_bool));
-			break;
-
-           	    case kt_comment:
-                        break;
-
-           	    case kt_obsolete:
-                        break;
-		    }
+                    process_keyword_equal(kw, new, value);
 		    new->next = NULL;
 
 		    if (_parser_kw_last)
@@ -222,51 +185,14 @@ statement_kw:
 		struct kw_list *new;
 
 		assert(_parser_kw != NULL);
-		new = alloc_kwlist();
+		new = alloc_kwlist(parser_cur_lineno());
 		if (!new) {
 		    yyerror("can't allocate memory in statement_kw");
 		} else {
 		    struct keyword kw;
 
 	            kw = $1;
-		    new->keyword = kw;
-
-		    switch(kw.keydef->type) {
-		    case kt_list:
-			new->number = parser_enum_list(kw.keydef, $3, TRUE);
-			break;
-	            case kt_enum:
-			new->number = parser_enum_list(kw.keydef, $3, FALSE);
-			break;
-		    case kt_rsakey:
-		    case kt_loose_enum:
-			new->number = parser_loose_enum(&new->keyword, $3);
-                        break;
-		    case kt_string:
-		    case kt_appendstring:
-		    case kt_appendlist:
-		    case kt_filename:
-                    case kt_dirname:
-                    case kt_ipaddr:
-                    case kt_bitstring:
-		    case kt_idtype:
-		    case kt_subnet:
-		        new->string = $3;
-			break;
-
-		    case kt_bool:
-		    case kt_invertbool:
-		    case kt_number:
-		    case kt_time:
-		    case kt_percent:
-			yyerror("valid keyword, but value is not a number");
-			assert(!(kw.keydef->type == kt_bool));
-			break;
-           	    case kt_comment:
-                        break;
-           	    case kt_obsolete:
-                        break;
-		    }
+                    process_keyword_equal(kw, new, $3);
 		    new->next = NULL;
 
 		    if (_parser_kw_last)
@@ -280,7 +206,7 @@ statement_kw:
 		struct kw_list *new;
 
 		assert(_parser_kw != NULL);
-		new = alloc_kwlist();
+		new = alloc_kwlist(parser_cur_lineno());
 		if (new) {
 		    new->keyword = $1;
 		    new->number = $<num>3;  /* Should not be necessary! */
@@ -298,7 +224,7 @@ statement_kw:
 		struct kw_list *new;
 
 		assert(_parser_kw != NULL);
-		new = alloc_kwlist();
+		new = alloc_kwlist(parser_cur_lineno());
 		if (new) {
 		    new->keyword = $1;
 		    new->number = $<num>3;  /* Should not be necessary! */
@@ -352,7 +278,7 @@ statement_kw:
 	        if(!fail)
                 {
 		  assert(_parser_kw != NULL);
-		  new = alloc_kwlist();
+                  new = alloc_kwlist(parser_cur_lineno());
 		  if (new) {
 		    new->keyword = $1;
 		    new->number = val;
@@ -402,7 +328,8 @@ statement_kw:
 	        if(!fail)
                 {
 		  assert(_parser_kw != NULL);
-		  new = alloc_kwlist();
+		  new = alloc_kwlist(parser_cur_lineno());
+
 		  if (new) {
 		    new->keyword = $1;
 		    new->number = val;
@@ -421,7 +348,7 @@ statement_kw:
 		struct kw_list *new;
 
 		assert(_parser_kw != NULL);
-		new = alloc_kwlist();
+		new = alloc_kwlist(parser_cur_lineno());
 		if (new) {
 		    new->keyword = $1;
 		    new->number = $<num>3;  /* Should not be necessary! */
@@ -519,7 +446,8 @@ static void parser_free_kwlist (struct kw_list *list)
 	while (list) {
 		elt = list;
 		list = list->next;
-		if (elt->string) free(elt->string);
+		if (elt->keyword.string)   free(elt->keyword.string);
+		if (elt->argument) free(elt->argument);
 		free(elt);
 	}
 }
@@ -544,12 +472,13 @@ void parser_free_conf (struct config_parsed *cfg)
 	}
 }
 
-struct kw_list *alloc_kwlist(void)
+struct kw_list *alloc_kwlist(unsigned int lineno)
 {
 	struct kw_list *new;
 
 	new = (struct kw_list *)malloc(sizeof(struct kw_list));
 	memset(new, 0, sizeof(struct kw_list));
+        new->lineno = lineno;
 	return new;
 }
 
@@ -562,6 +491,56 @@ struct starter_comments *alloc_comment(void)
 	return new;
 }
 
+void process_keyword_equal(struct keyword kw, struct kw_list *new, const char *const_string)
+{
+    /* copy the string, as we may want to smash it around a bit */
+    char *string = alloca(strlen(const_string)+1);
+    char *rest = NULL;
+
+    strcpy(string, const_string);
+
+    new->keyword = kw;
+    switch(kw.keydef->type) {
+    case kt_list:
+        new->number = parser_enum_list(kw.keydef, string, TRUE);
+        break;
+    case kt_enum:
+        new->number = parser_enum_list(kw.keydef, string, FALSE);
+        break;
+    case kt_rsakey:
+    case kt_loose_enum:
+        new->number = parser_loose_enum(&new->keyword, string);
+        break;
+    case kt_loose_enumarg:
+        new->number = parser_loose_enum_arg(&new->keyword, string, &rest);
+        if(rest) {
+            new->argument=strdup(rest);
+        }
+        break;
+    case kt_string:
+    case kt_appendstring:
+    case kt_appendlist:
+    case kt_filename:
+    case kt_dirname:
+    case kt_ipaddr:
+    case kt_bitstring:
+    case kt_idtype:
+    case kt_subnet:
+        new->keyword.string = strdup(string);
+        break;
+
+    case kt_bool:
+    case kt_invertbool:
+    case kt_number:
+    case kt_time:
+    case kt_percent:
+        yyerror("valid keyword, but value is not a number");
+        assert(!(kw.keydef->type == kt_bool));
+        break;
+    case kt_comment:
+        break;
+    }
+}
 
 /*
  * Local Variables:

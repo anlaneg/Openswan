@@ -20,6 +20,7 @@
 #include "whackmsgtestlib.c"
 #include "seam_timer.c"
 #include "seam_fakevendor.c"
+#include "seam_initiate.c"
 #include "seam_pending.c"
 #include "seam_ikev1.c"
 #include "seam_crypt.c"
@@ -88,7 +89,7 @@ int main(int argc, char *argv[])
     }
 
     hostpair_list();
-    init_parker_interface();
+    init_parker_interface(TRUE);
 
     {
         prompt_pass_t pass;
@@ -98,7 +99,7 @@ int main(int argc, char *argv[])
         osw_load_preshared_secrets(&pluto_secrets
                                    , TRUE
                                    , "../samples/parker.secrets"
-                                   , &pass);
+                                   , &pass, NULL);
     }
     fprintf(stderr, "listening now\n");
     cur_debugging = DBG_CONTROL|DBG_CONTROLMORE;

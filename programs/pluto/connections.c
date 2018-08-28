@@ -52,7 +52,7 @@
 #include "pending.h"
 #include "foodgroups.h"
 #include "packet.h"
-#include "demux.h"	/* needs packet.h */
+#include "pluto/demux.h"	/* needs packet.h */
 #include "state.h"
 #include "timer.h"
 #include "ipsec_doi.h"	/* needs demux.h and state.h */
@@ -135,66 +135,54 @@ release_connection(struct connection *c, bool relations)
     }
 }
 
-#ifdef DYNAMICDNS
-
-/* update the host pairs with the latest DNS ip address */
-void
-update_host_pairs(struct connection *c)
+/*
+ * this routine compares two struct end on two basis.
+ *   They are the same if they are not KH_IPHOSTNAME, and have the
+ *   same host_addr.
+ *   They are the same if they are KH_IPHOSTNAME, and have the same
+ *   same *name*.
+ *   If one is KH_IPHOSTNAME, and the other is not, then the host_addr
+ *   are compared.
+ *
+ */
+bool compare_end_addr_names(struct end *a, struct end *b)
 {
-    struct connection *d = NULL, *conn_next_tmp = NULL, *conn_list = NULL;
-    struct IPhost_pair *p = NULL;
-    ip_address new_addr;
-    char *dnshostname;
-
-    p = c->IPhost_pair;
-    d = p ? p->connections : NULL;
-
-    if (d == NULL
-    	|| p == NULL
-	|| d->dnshostname == NULL
-	|| ttoaddr(d->dnshostname, 0, d->addr_family, &new_addr) != NULL
-	|| sameaddr(&new_addr, &p->him.addr))
-	    return;
-
-    /* remember this dnshostname */
-    dnshostname = c->dnshostname;
-
-    for (; d != NULL; d = conn_next_tmp)
-    {
-	conn_next_tmp = d->IPhp_next;
-	if (d->dnshostname && strcmp(d->dnshostname, dnshostname) == 0)
-	{
-	      /*
-	      * If there is a dnshostname and it is the same as the one that has changed, then
-	      * change the connection's remote host address and remove the connection from the host pair.
-	      */
-	      d->spd.that.host_addr = new_addr;
-	      list_rm(struct connection,IPhp_next,d, d->IPhost_pair->connections);
-
-	      d->IPhp_next = conn_list;
-	      conn_list = d;
-	}
+    if(a->host_type == KH_IPHOSTNAME
+       && b->host_type == KH_IPHOSTNAME) {
+        return strcasecmp(a->host_addr_name, b->host_addr_name)==0;
     }
 
-    if (conn_list)
-    {
-	d = conn_list;
-	for (; d != NULL; d = conn_next_tmp)
-	{
-	    /*
-	     * connect the connection to the new IP host_pair
-	     */
-	    conn_next_tmp = d->IPhp_next;
-	    connect_to_IPhost_pair(d);
-	}
-    }
-
-    clear_IPhost_pair(c);
-    connect_to_IPhost_pair(c);
+    return sameaddr(&a->host_addr, &b->host_addr);
 }
 
-#endif /* DYNAMICDNS */
+/*
+ * update the host pairs attachment, after host_addr changes
+ * just remove it from the pair it is in, and put it in another pair.
+ *
+ * This routine also binds to a new/proper interface using orient.
+ */
+bool
+update_host_pairs(struct connection *c)
+{
+    if (c->spd.that.host_type != KH_IPHOSTNAME)
+	    return TRUE;
 
+    clear_IPhost_pair(c);
+
+    /*
+     * unorient, and try again: this may change the interface to the
+     * appropriate ADDRESS family too!
+     * If orient fails, then tell caller, as they move to another address
+     * family.
+     */
+    c->interface = NULL;
+    if(!orient(c, pluto_port500)) {
+        return FALSE;
+    }
+
+    connect_to_IPhost_pair(c);
+    return TRUE;
+}
 
 
 /* Delete a connection */
@@ -298,9 +286,6 @@ delete_connection(struct connection *c, bool relations)
 #ifdef HAVE_LABELED_IPSEC
     pfreeany(c->policy_label);
 #endif
-#ifdef DYNAMICDNS
-    pfreeany(c->dnshostname);
-#endif /* DYNAMICDNS */
 
     sr = &c->spd;
     while(sr) {
@@ -513,10 +498,6 @@ unshare_connection_strings(struct connection *c)
     c->cisco_banner = clone_str(c->cisco_banner, "connection cisco_banner");
 #endif
 
-#ifdef DYNAMICDNS
-    c->dnshostname = clone_str(c->dnshostname, "connection dnshostname");
-#endif /* DYNAMICDNS */
-
     /* duplicate any alias, adding spaces to the beginning and end */
     c->connalias = clone_str(c->connalias, "connection alias");
 
@@ -623,9 +604,11 @@ load_end_certificate(const char *filename, struct end *dst)
 }
 
 static bool
-extract_end(struct end *dst, const struct whack_end *src, const char *which)
+extract_end(struct connection *conn
+            , struct end *dst, const struct whack_end *src, const char *which)
 {
     bool same_ca = FALSE;
+    unsigned int family = conn->end_addr_family;
 
     /* decode id, if any */
     if (src->id == NULL)
@@ -645,38 +628,66 @@ extract_end(struct end *dst, const struct whack_end *src, const char *which)
 
     dst->ca = empty_chunk;
 
-    /* decode CA distinguished name, if any */
-    if (src->ca != NULL)
-    {
-	if streq(src->ca, "%same")
-	    same_ca = TRUE;
-	else if (!streq(src->ca, "%any"))
-	{
-	    err_t ugh;
+    switch(src->keytype) {
+    case PUBKEY_NOTSET:
+        break;
 
-	    dst->ca.ptr = temporary_cyclic_buffer();
-	    dst->ca.len = IDTOA_BUF;
-	    ugh = atodn(src->ca, &dst->ca);
-	    if (ugh != NULL)
-	    {
-		openswan_log("bad CA string '%s': %s (ignored)", src->ca, ugh);
-		dst->ca = empty_chunk;
-	    }
-	}
-    }
+    case PUBKEY_DNSONDEMAND:
+        dst->key_from_DNS_on_demand = TRUE;
+        break;
 
-    if(src->sendcert == cert_forcedtype) {
-	/* certificate is a blob */
-	dst->cert.forced = TRUE;
-	dst->cert.type = src->certtype;
+    case PUBKEY_DNS:
+        /* synchrononous fetch */
+        dst->key_from_DNS_on_demand = FALSE;
+        break;
+
+    case PUBKEY_CERTIFICATE:
+        /* decode CA distinguished name, if any */
+        if (src->ca != NULL)
+            {
+                if streq(src->ca, "%same")
+                            same_ca = TRUE;
+                else if (!streq(src->ca, "%any"))
+                    {
+                        err_t ugh;
+
+                        dst->ca.ptr = temporary_cyclic_buffer();
+                        dst->ca.len = IDTOA_BUF;
+                        ugh = atodn(src->ca, &dst->ca);
+                        if (ugh != NULL)
+                            {
+                                openswan_log("bad CA string '%s': %s (ignored)", src->ca, ugh);
+                                dst->ca = empty_chunk;
+                            }
+                    }
+            }
+
+        if(src->sendcert == cert_forcedtype) {
+            /* certificate is a blob */
+            dst->cert.forced = TRUE;
+            dst->cert.type = src->certtype;
 #ifdef HAVE_LIBNSS
-	load_cert_from_nss(TRUE, src->cert, TRUE, "forced cert", &dst->cert);
+            load_cert_from_nss(TRUE, src->cert, TRUE, "forced cert", &dst->cert);
 #else
-	load_cert(TRUE, src->cert, TRUE, "forced cert", &dst->cert);
+            load_cert(TRUE, src->cert, TRUE, "forced cert", &dst->cert);
 #endif
-    } else {
-	/* load local end certificate and extract ID, if any */
-	load_end_certificate(src->cert, dst);
+        } else {
+            /* load local end certificate and extract ID, if any */
+            load_end_certificate(src->cert, dst);
+        }
+        break;
+
+    case PUBKEY_PREEXCHANGED:
+        if(src->cert) {
+            dst->key1 = find_key_by_string(src->cert);
+        }
+        if(src->ca) {
+            dst->key2 = find_key_by_string(src->ca);
+        }
+        openswan_log("use keyid: 1:%s / 2:%s"
+                     , dst->key1 ? dst->key1->key_ckaid_print_buf : "<>"
+                     , dst->key2 ? dst->key2->key_ckaid_print_buf : "<>");
+        break;
     }
 
     /* does id has wildcards? */
@@ -687,7 +698,12 @@ extract_end(struct end *dst, const struct whack_end *src, const char *which)
 
     /* the rest is simple copying of corresponding fields */
     dst->host_type = src->host_type;
-    dst->host_addr = src->host_addr;
+
+    if(src->host_type == KH_ANY && family != 0) {
+        anyaddr(family, &dst->host_addr);
+    } else {
+        dst->host_addr = src->host_addr;
+    }
     dst->host_addr_name = src->host_addr_name;
     dst->host_nexthop = src->host_nexthop;
     dst->host_srcip = src->host_srcip;
@@ -713,7 +729,6 @@ extract_end(struct end *dst, const struct whack_end *src, const char *which)
     dst->protocol = src->protocol;
     dst->port = src->port;
     dst->has_port_wildcard = src->has_port_wildcard;
-    dst->key_from_DNS_on_demand = src->key_from_DNS_on_demand;
     dst->has_client = src->has_client;
     dst->has_client_wildcard = src->has_client_wildcard;
     dst->updown = src->updown;
@@ -725,31 +740,17 @@ extract_end(struct end *dst, const struct whack_end *src, const char *which)
 
     dst->sendcert =  src->sendcert;
 
-    /* see if we can resolve the DNS name right now */
-    /* XXX this is WRONG, we should do this asynchronously, as part of
-     * the normal loading process
-     */
-    {
-	err_t er;
-	int port;
+    /* save the originally provided hint */
+    dst->saved_hint_addr = dst->host_addr;
 
-	switch(dst->host_type) {
-	case KH_IPHOSTNAME:
-	    er = ttoaddr(dst->host_addr_name, 0, 0, &dst->host_addr);
-
-	    /*The above call wipes out the port, put it again*/
-	    port = htons(dst->port);
-	    setportof(port, &dst->host_addr);
-
-	    if(er) {
-		loglog(RC_COMMENT, "failed to convert '%s' at load time: %s"
-		       , dst->host_addr_name, er);
-	    }
-	    break;
-
-	default:
-	    break;
-	}
+    /* see if we should try to resolve the DNS name */
+    /* dst->host_addr may already have a hint, do not destroy it! */
+    if(dst->host_type == KH_IPHOSTNAME
+       && dst->host_addr_name!=NULL && strlen(dst->host_addr_name) > 0) {
+        dst->host_address_list.addresses_available = FALSE;
+        kick_adns_connection_lookup(conn, dst, TRUE);
+    } else {
+        dst->host_address_list.addresses_available = TRUE;
     }
 
     return same_ca;
@@ -771,20 +772,26 @@ check_connection_end(const struct whack_end *this, const struct whack_end *that
 , const struct whack_message *wm)
 {
     if ((this->host_type == KH_IPADDR || this->host_type == KH_IFACE)
-	&& (wm->addr_family != addrtypeof(&this->host_addr)
-	    || wm->addr_family != addrtypeof(&this->host_nexthop)))
+	&& wm->end_addr_family != 0
+	&& (wm->end_addr_family != addrtypeof(&this->host_addr)
+	    || wm->end_addr_family != addrtypeof(&this->host_nexthop)))
     {
 	/* this should have been diagnosed by whack, so we need not be clear
 	 * !!! overloaded use of RC_CLASH
 	 */
+        const struct af_info *addr, *nexthop;
+        addr    = aftoinfo(addrtypeof(&this->host_addr));
+        nexthop = aftoinfo(addrtypeof(&this->host_nexthop));
+
 	loglog(RC_CLASH, "address family inconsistency in this connection=%s host=%s/nexthop=%s"
-	       , aftoinfo(wm->addr_family)->name
-	       , aftoinfo(addrtypeof(&this->host_addr))->name
-	       , aftoinfo(addrtypeof(&this->host_nexthop))->name);
+	       , (wm->end_addr_family) ? aftoinfo(wm->end_addr_family)->name             : "NULL"
+	       , (addr)    ? addr->name    : "NULL"
+	       , (nexthop) ? nexthop->name : "NULL");
 	return FALSE;
     }
 
-    if (subnettypeof(&this->client) != subnettypeof(&that->client))
+    if (this->host_type == KH_IPADDR && that->host_type == KH_IPADDR
+	&& subnettypeof(&this->client) != subnettypeof(&that->client))
     {
 	/* this should have been diagnosed by whack, so we need not be clear
 	 * !!! overloaded use of RC_CLASH
@@ -794,15 +801,10 @@ check_connection_end(const struct whack_end *this, const struct whack_end *that
     }
 
     /* MAKE this more sane in the face of unresolved IP addresses */
-    if (that->host_type != KH_IPHOSTNAME && isanyaddr(&that->host_addr))
+    if (that->host_type != KH_IPHOSTNAME
+        && KH_ISWILDCARD(that->host_type))
     {
-	/* other side is wildcard: we must check if other conditions met */
-	if (this->host_type != KH_IPHOSTNAME && isanyaddr(&this->host_addr))
-	{
-	    loglog(RC_ORIENT, "connection must specify host IP address for our side");
-	    return FALSE;
-	}
-	else if (!NEVER_NEGOTIATE(wm->policy))
+	if (!NEVER_NEGOTIATE(wm->policy))
 	{
 	    /* check that all main mode RW IKE policies agree because we must
 	     * implement them before the correct connection is known.
@@ -816,7 +818,7 @@ check_connection_end(const struct whack_end *this, const struct whack_end *that
 
 	    c = find_host_pair_connections(__FUNCTION__
                                            , ANY_MATCH
-					   , &this->host_addr
+					   , NULL
 					   , this->host_port
                                            , KH_ANY
 					   , (const ip_address *)NULL
@@ -899,6 +901,8 @@ add_connection(const struct whack_message *wm)
     struct alg_info_ike *alg_info_ike;
     const char *ugh;
 
+    int family = wm->end_addr_family;
+
     alg_info_ike = NULL;
 
     if (con_by_name(wm->name, FALSE) != NULL)
@@ -959,11 +963,6 @@ add_connection(const struct whack_message *wm)
 	c->cisco_domain_info = NULL;
 	c->cisco_banner = NULL;
 #endif
-#ifdef DYNAMICDNS
-	c->dnshostname = NULL;
-	if (wm->dnshostname)
-		c->dnshostname = wm->dnshostname;
-#endif /* DYNAMICDNS */
 
 	c->policy = wm->policy;
 
@@ -1107,13 +1106,22 @@ add_connection(const struct whack_message *wm)
 
 	c->forceencaps = wm->forceencaps;
 
-	c->addr_family = wm->addr_family;
+        if(family == 0) {
+	  if(addrtypeof(&c->spd.this.host_addr) != 0) {
+    	    family = addrtypeof(&c->spd.this.host_addr);
+          }
+	  if(addrtypeof(&c->spd.that.host_addr) != 0) {
+    	    family = addrtypeof(&c->spd.that.host_addr);
+          }
+        }
+
+	c->end_addr_family = family;
 	c->tunnel_addr_family = wm->tunnel_addr_family;
 
 	c->requested_ca = NULL;
 
-	same_leftca  = extract_end(&c->spd.this, &wm->left, "left");
-	same_rightca = extract_end(&c->spd.that, &wm->right, "right");
+        same_leftca  = extract_end(c, &c->spd.this, &wm->left, "left");
+        same_rightca = extract_end(c, &c->spd.that, &wm->right, "right");
 
 	if (c->spd.this.xauth_server || c->spd.that.xauth_server)
 	{
@@ -1972,7 +1980,7 @@ build_outgoing_opportunistic_connection(struct gw_info *gw
  */
 struct connection *
 route_owner(struct connection *c
-	    , struct spd_route *cur_spd
+	    , const struct spd_route *cur_spd
 	    , struct spd_route **srp
 	    , struct connection **erop
 	    , struct spd_route **esrp)
@@ -2096,6 +2104,72 @@ route_owner(struct connection *c
     return routed(best_routing)? best_ro : NULL;
 }
 
+static struct connection *
+find_match_by_policy(struct connection *c, lset_t policy_set, lset_t policy_clear,
+                     const char *policy_set_buf, const char *policy_clear_buf,
+                     struct connection **pPolicy_hint)
+{
+    struct connection *c_without_version_policy = NULL;
+
+    if (policy_set != LEMPTY || policy_clear != LEMPTY) {
+	/*
+	 * if we have requirements for the policy, choose the first matching
+	 * connection.
+	 */
+	DBG(DBG_CONTROLMORE,
+		DBG_log("searching for connection with policy = %s/%s"
+                        , policy_set_buf, policy_clear_buf));
+
+	for (; c != NULL; c = c->IPhp_next) {
+            lset_t policy_without_ikeversion = (c->policy & (~POLICY_IKEV1_DISABLE)) | POLICY_IKEV2_ALLOW;
+
+	    DBG(DBG_CONTROLMORE,
+		DBG_log("found policy = %s (%s)"
+			, bitnamesof(sa_policy_bit_names, c->policy)
+			, c->name));
+
+	    if(NEVER_NEGOTIATE(c->policy)) continue;
+
+            /* XAUTH must match true/false exactly */
+	    if ((policy_set & POLICY_XAUTH) != (c->policy & POLICY_XAUTH)) continue;
+
+	    if ((c->policy & policy_set) == policy_set
+                && (c->policy & policy_clear) == 0) {
+		break;
+            }
+
+            /* this is a bit of comparison specific to IKEv1/IKEv2, because we need to
+             * lead a bread trail to indicate if we could have found something, had
+             * the policy ignored IKE version info
+             */
+            if((policy_without_ikeversion & policy_set)==policy_set
+               && (policy_without_ikeversion & policy_clear)==0) {
+                c_without_version_policy = c;
+            }
+
+            DBG(DBG_CONTROL,
+                DBG_log("connection %s (policy=%s) does not match desired policy %s (~ %s) [withoutversion: %s]"
+                        , c->name
+                        , bitnamesof(sa_policy_bit_names, c->policy)
+                        , policy_set_buf, policy_clear_buf
+                        , c_without_version_policy ? c_without_version_policy->name : "none"));
+	}
+
+    }
+
+    if(c==NULL && c_without_version_policy) {
+        DBG(DBG_CONTROL,
+            DBG_log("connection %s (policy=%s) would have matched, but ike version policy was wrong"
+                    , c_without_version_policy->name
+                    , bitnamesof(sa_policy_bit_names, c_without_version_policy->policy)));
+        if(pPolicy_hint) {
+            *pPolicy_hint = c_without_version_policy;
+        }
+    }
+
+    return c;
+}
+
 /* Find some connection with this pair of hosts.
  * We don't know enough to chose amongst those available.
  * ??? no longer usefully different from find_host_pair_connections
@@ -2104,72 +2178,72 @@ struct connection *
 find_host_connection2(const char *func, bool exact
                       , const ip_address *me, u_int16_t my_port
                       , enum keyword_host histype
-                      , const ip_address *him, u_int16_t his_port, lset_t policy)
+                      , const ip_address *him, u_int16_t his_port
+                      , lset_t policy_set, lset_t policy_clear
+                      , lset_t *pPolicy_IkeVersion)
 {
     struct connection *c;
+    struct connection *cWithoutIkePolicy = NULL;
+    struct connection *cWithoutIkePolicy_any = NULL;
+    char policy_set_buf[128];
+    char policy_clear_buf[128];
+    zero(policy_set_buf);
+    zero(policy_clear_buf);
+
+    bitnamesofb(sa_policy_bit_names, policy_set, policy_set_buf, sizeof(policy_set_buf));
+    strcpy(policy_clear_buf, "-");
+    if(policy_clear) {
+        bitnamesofb(sa_policy_bit_names, policy_clear, policy_clear_buf, sizeof(policy_clear_buf));
+    }
+
+
     DBG(DBG_CONTROLMORE,
         char mebuf[ADDRTOT_BUF];
         char himbuf[ADDRTOT_BUF];
-	DBG_log("find_host_connection2 called from %s, me=%s:%d him=%s:%d policy=%s", func
+	DBG_log("find_host_connection2 called from %s, me=%s:%d him=%s:%d policy=%s/%s", func
 		, (addrtot(me,  0, mebuf,  sizeof(mebuf)),mebuf),   my_port
 		, him ?  (addrtot(him, 0, himbuf, sizeof(himbuf)),himbuf) : "%any"
-		, his_port , bitnamesof(sa_policy_bit_names, policy)));
+		, his_port , policy_set_buf, policy_clear_buf));
     c = find_host_pair_connections(__FUNCTION__, exact, me, my_port, histype, him, his_port);
 
-    if (policy != LEMPTY) {
-	/*
-	 * if we have requirements for the policy, choose the first matching
-	 * connection.
-	 */
-	DBG(DBG_CONTROLMORE,
-		DBG_log("searching for connection with policy = %s"
-			, bitnamesof(sa_policy_bit_names, policy)));
-	for (; c != NULL; c = c->IPhp_next) {
-	    DBG(DBG_CONTROLMORE,
-		DBG_log("found policy = %s (%s)"
-			, bitnamesof(sa_policy_bit_names, c->policy)
-			, c->name));
-	    if(NEVER_NEGOTIATE(c->policy)) continue;
-
-            /* XAUTH must match true/false exactly */
-	    if ((policy & POLICY_XAUTH) != (c->policy & POLICY_XAUTH)) continue;
-
-	    if ((c->policy & policy) == policy)
-		break;
-	}
-
-    }
-
-    /* need to check for NEVER_NEGOTIATE, because policy might not be set */
-    for(; c != NULL && NEVER_NEGOTIATE(c->policy); c = c->IPhp_next);
+    c = find_match_by_policy(c, policy_set, policy_clear, policy_set_buf, policy_clear_buf, &cWithoutIkePolicy);
 
     if(c == NULL) {
+        /* look again with right=%any */
         c = find_host_pair_connections(__FUNCTION__, ANY_MATCH, me, my_port, KH_ANY, NULL, pluto_port500);
 
-        if (policy != LEMPTY) {
-            DBG(DBG_CONTROLMORE,
-		DBG_log("searching for %%any connection with policy = %s"
-			, bitnamesof(sa_policy_bit_names, policy)));
-            for (; c != NULL; c = c->IPhp_next) {
-                DBG(DBG_CONTROLMORE,
-                    DBG_log("found policy = %s (%s)"
-                            , bitnamesof(sa_policy_bit_names, c->policy)
-                            , c->name));
-                if(NEVER_NEGOTIATE(c->policy)) continue;
-
-                /* XAUTH must match true/false exactly */
-                if ((policy & POLICY_XAUTH) != (c->policy & POLICY_XAUTH)) continue;
-
-                if ((c->policy & policy) == policy)
-                    break;
-            }
-        }
-        for(; c != NULL && NEVER_NEGOTIATE(c->policy); c = c->IPhp_next);
+        c = find_match_by_policy(c, policy_set, policy_clear, policy_set_buf, policy_clear_buf, &cWithoutIkePolicy_any);
     }
 
-
     DBG(DBG_CONTROLMORE,
-	DBG_log("find_host_connection2 returns %s", c ? c->name : "empty"));
+	DBG_log("find_host_connection2 returns %s (ike=%s/%s)"
+                , c ? c->name : "empty"
+                , cWithoutIkePolicy     ? cWithoutIkePolicy->name     : "none"
+                , cWithoutIkePolicy_any ? cWithoutIkePolicy_any->name : "none"));
+
+    if(c == NULL && pPolicy_IkeVersion != NULL) {
+        if(cWithoutIkePolicy) {
+            if(policy_clear & POLICY_IKEV1_DISABLE
+               && cWithoutIkePolicy->policy & POLICY_IKEV1_DISABLE) {
+                *pPolicy_IkeVersion |= POLICY_IKEV1_DISABLE;
+            }
+            if(policy_set & POLICY_IKEV2_ALLOW
+               && (cWithoutIkePolicy->policy & POLICY_IKEV2_ALLOW) == 0) {
+                *pPolicy_IkeVersion |= POLICY_IKEV2_ALLOW;
+            }
+        }
+        if(cWithoutIkePolicy_any) {
+            if(policy_clear & POLICY_IKEV1_DISABLE
+               && cWithoutIkePolicy_any->policy & POLICY_IKEV1_DISABLE) {
+                *pPolicy_IkeVersion |= POLICY_IKEV1_DISABLE;
+            }
+            if(policy_set & POLICY_IKEV2_ALLOW
+               && (cWithoutIkePolicy_any->policy & POLICY_IKEV2_ALLOW) == 0) {
+                *pPolicy_IkeVersion |= POLICY_IKEV2_ALLOW;
+            }
+        }
+    }
+
     return c;
 }
 
@@ -2264,7 +2338,7 @@ refine_host_connection(const struct state *st, const struct id *peer_id
     struct connection *best_found = NULL;
     lset_t auth_policy;
     lset_t p1mode_policy = aggrmode ? POLICY_AGGRESSIVE : LEMPTY;
-    const struct RSA_private_key *my_RSA_pri = NULL;
+    const struct private_key_stuff *my_RSA_pks = NULL;
     bool wcpip;	/* wildcard Peer IP? */
     int wildcards, best_wildcards;
     int our_pathlen, best_our_pathlen, peer_pathlen, best_peer_pathlen;
@@ -2325,8 +2399,8 @@ refine_host_connection(const struct state *st, const struct id *peer_id
 	    /* at this point, we've committed to our RSA private key:
 	     * we used it in our previous message.
 	     */
-	    my_RSA_pri = get_RSA_private_key(c);
-	    if (my_RSA_pri == NULL)
+	    my_RSA_pks = get_RSA_private_key(c);
+	    if (my_RSA_pks == NULL)
 		return NULL;	/* cannot determine my RSA private key! */
 	}
 	break;
@@ -2424,11 +2498,12 @@ refine_host_connection(const struct state *st, const struct id *peer_id
 		 * used in the SIG_I payload that we sent previously.
 		 */
 		{
-		    const struct RSA_private_key *pri
+		    const struct private_key_stuff *pks
 			= get_RSA_private_key(d);
 
-		    if (pri == NULL || (initiator && (
-			!same_RSA_public_key(&my_RSA_pri->pub, &pri->pub))))
+		    if (pks == NULL || (initiator && (
+			!same_RSA_public_key(&my_RSA_pks->pub->u.rsa
+                                             , &pks->pub->u.rsa))))
 			    continue;
 		}
 		break;
@@ -3149,6 +3224,24 @@ show_one_connection(struct connection *c, logfunc logger)
 		  , instance
 		  , this_ca
 		  , that_ca);
+    }
+
+    /* show public keys */
+    if(c->spd.this.key1 || c->spd.this.key2) {
+        logger(RC_COMMENT
+               , "\"%s\"%s:   keys: 1:%s 2:%s..."
+               , c->name
+               , instance
+               , c->spd.this.key1 ? c->spd.this.key1->key_ckaid_print_buf : "none"
+               , c->spd.this.key2 ? c->spd.this.key2->key_ckaid_print_buf : "none");
+    }
+    if(c->spd.that.key1 || c->spd.that.key2) {
+        logger(RC_COMMENT
+               , "\"%s\"%s:        ....1:%s 2:%s "
+               , c->name
+               , instance
+               , c->spd.that.key1 ? c->spd.that.key1->key_ckaid_print_buf : "none"
+               , c->spd.that.key2 ? c->spd.that.key2->key_ckaid_print_buf : "none");
     }
 
     logger(RC_COMMENT

@@ -136,9 +136,9 @@ same_peer_ids(const struct connection *c, const struct connection *d
 
 /** returns a host pair based upon addresses.
  *
- * find_host_pair is given a pair of addresses, plus UDP ports, and
- * returns a host_pair entry that covers it. It also moves the relevant
- * pair description to the beginning of the list, so that it can be
+ * find_host_pair is given a pair of addresses, plus UDP ports, the IKE
+ * version number, and returns a host_pair entry that covers it.
+ * It also moves the relevant pair description to the beginning of the list, so that it can be
  * found faster next time.
  *
  */
@@ -326,7 +326,7 @@ find_host_pair_connections(const char *func, bool exact
         char himtypebuf[KEYWORD_NAME_BUFLEN];
 	DBG_log("found_host_pair_conn (%s): %s:%d %s/%s:%d -> hp:%s\n"
 		  , func
-		  , (addrtot(myaddr,  0, b1, sizeof(b1)), b1)
+                , myaddr ? (addrtot(myaddr,  0, b1, sizeof(b1)), b1) : "%any"
 		  , myport
                   , keyword_name(&kw_host_list, histype, himtypebuf)
 		  , hisaddr ? (addrtot(hisaddr, 0, b2, sizeof(b2)), b2) : "%any"
@@ -502,7 +502,7 @@ find_ID_host_pair(const struct id me
             idtoa(&p->me_who, mewho, sizeof(mewho));
             idtoa(&p->him_who,himwho, sizeof(himwho));
             DBG_log("                  comparing to me=%s him=%s (%s)\n"
-                    , mewho, himwho, p->connections->name));
+                    , mewho, himwho, (p && p->connections) ? p->connections->name : "<none>"));
 
         /* kick out if it does not match:
          * easier to understand than positive/convuluted logic
@@ -568,6 +568,7 @@ connect_to_IDhost_pair(struct connection *c)
         /* must be on wrong list: remove from current list */
         clear_IDhost_pair(c);
     }
+
 
     /* add this connection to front of ID host pair connection list */
     c->IDhp_next = hp->connections;

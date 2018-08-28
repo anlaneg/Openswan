@@ -60,6 +60,8 @@
 #include "whack.h"      /* for RC_LOG_SERIOUS */
 #include "keys.h"
 
+#include <ipsec_saref.h>
+
 #ifdef XAUTH_USEPAM
 #include <security/pam_appl.h>
 #endif
@@ -193,22 +195,13 @@ record_and_initiate_opportunistic(const ip_subnet *ours
     }
 }
 
-static unsigned get_proto_reqid(unsigned base, int proto)
+/*
+ * REQID are used to link IPsec policies and IPsec SA databases together
+ */
+static unsigned get_proto_reqid(void)
 {
-    switch (proto)
-    {
-    default:
-    case IPPROTO_COMP:
-        base++;
-        /* fall through */
-    case IPPROTO_ESP:
-        base++;
-        /* fall through */
-    case IPPROTO_AH:
-        break;
-    }
-
-    return base;
+    unsigned int base = 1025;
+    return ++base;
 }
 
 /* Generate Unique SPI numbers.
@@ -232,20 +225,29 @@ static unsigned get_proto_reqid(unsigned base, int proto)
  * check if the number was previously used (assuming that no
  * SPI lives longer than 4G of its successors).
  */
-ipsec_spi_t
-get_ipsec_spi(ipsec_spi_t avoid, int proto, struct spd_route *sr, bool tunnel)
+bool
+get_ipsec_spi(struct ipsec_proto_info *pi
+	      , int proto
+	      , struct state *st
+	      , bool tunnel)
 {
     static ipsec_spi_t spi = 0; /* host order, so not returned directly! */
     char text_said[SATOT_BUF];
 
-    set_text_said(text_said, &sr->this.host_addr, 0, proto);
+    /* for reasons of esthetics, we avoid using the same spi as the sender */
+    ipsec_spi_t avoid = pi->attrs.spi;
 
-    if (kernel_ops->get_spi)
-        return kernel_ops->get_spi(&sr->that.host_addr
-            , &sr->this.host_addr, proto, tunnel
-            , get_proto_reqid(sr->reqid, proto)
-            , IPSEC_DOI_SPI_OUR_MIN, 0xffffffff
-            , text_said);
+    set_text_said(text_said, &st->st_localaddr, 0, proto);
+
+    if (kernel_ops->get_spi) {
+	pi->our_spi_in_kernel = TRUE;
+	pi->our_spi = kernel_ops->get_spi(&st->st_remoteaddr
+				   , &st->st_localaddr, proto, tunnel
+					  , get_proto_reqid()
+				   , IPSEC_DOI_SPI_OUR_MIN, 0xffffffff
+				   , text_said);
+	return pi->our_spi != 0;
+    }
 
     spi++;
     while (spi < IPSEC_DOI_SPI_OUR_MIN || spi == ntohl(avoid))
@@ -258,7 +260,8 @@ get_ipsec_spi(ipsec_spi_t avoid, int proto, struct spd_route *sr, bool tunnel)
             DBG_dump("generate SPI:", (u_char *)&spi_net, sizeof(spi_net));
         });
 
-    return htonl(spi);
+    pi->our_spi = htonl(spi);
+    return TRUE;
 }
 
 /* Generate Unique CPI numbers.
@@ -270,21 +273,22 @@ get_ipsec_spi(ipsec_spi_t avoid, int proto, struct spd_route *sr, bool tunnel)
  * no matter what order) indicating failure.
  */
 ipsec_spi_t
-get_my_cpi(struct spd_route *sr, bool tunnel)
+get_my_cpi(struct state *st, bool tunnel)
 {
     static cpi_t
         first_busy_cpi = 0,
         latest_cpi;
     char text_said[SATOT_BUF];
 
-    set_text_said(text_said, &sr->this.host_addr, 0, IPPROTO_COMP);
+    set_text_said(text_said, &st->st_localaddr, 0, IPPROTO_COMP);
 
     if (kernel_ops->get_spi)
-        return kernel_ops->get_spi(&sr->that.host_addr
-            , &sr->this.host_addr, IPPROTO_COMP, tunnel
-            , get_proto_reqid(sr->reqid, IPPROTO_COMP)
-            , IPCOMP_FIRST_NEGOTIATED, IPCOMP_LAST_NEGOTIATED
-            , text_said);
+	st->st_ipcomp.our_spi_in_kernel = TRUE;
+        return kernel_ops->get_spi(&st->st_remoteaddr
+				   , &st->st_localaddr, IPPROTO_COMP, tunnel
+				   , get_proto_reqid()
+				   , IPCOMP_FIRST_NEGOTIATED, IPCOMP_LAST_NEGOTIATED
+				   , text_said);
 
     while (!(IPCOMP_FIRST_NEGOTIATED <= first_busy_cpi && first_busy_cpi < IPCOMP_LAST_NEGOTIATED))
     {
@@ -306,7 +310,7 @@ get_my_cpi(struct spd_route *sr, bool tunnel)
 /* form the command string */
 int
 fmt_common_shell_out(char *buf, int blen, struct connection *c
-		     , struct spd_route *sr, struct state *st)
+		     , const struct spd_route *sr, struct state *st)
 {
     int result;
     char
@@ -476,7 +480,7 @@ fmt_common_shell_out(char *buf, int blen, struct connection *c
 		    , metric_str
 		    , connmtu_str
 		    , prettypolicy(c->policy)
-		    , (c->addr_family == AF_INET) ? 4 : 6
+		    , (c->end_addr_family == AF_INET) ? 4 : 6
 #ifdef XAUTH
 		    , secure_xauth_username_str
 #endif
@@ -498,16 +502,23 @@ fmt_common_shell_out(char *buf, int blen, struct connection *c
 	return ((result>=blen) || (result<0))? -1 : result;
 }
 
-bool
-do_command(struct connection *c, struct spd_route *sr, const char *verb, struct state *st)
+const char *kernel_command_verb_suffix(struct state *st
+                                       , const struct spd_route *sr)
 {
     const char *verb_suffix;
+    const ip_address *local;
+
+    if(st != NULL) {
+        local = &st->st_localaddr;
+    } else {
+        local = &sr->this.host_addr;
+    }
 
     /* figure out which verb suffix applies for logging purposes */
     {
         const char *hs, *cs;
 
-        switch (addrtypeof(&sr->this.host_addr))
+        switch (addrtypeof(local))
         {
             case AF_INET:
                 hs = "-host";
@@ -518,18 +529,26 @@ do_command(struct connection *c, struct spd_route *sr, const char *verb, struct 
                 cs = "-client-v6";
                 break;
             default:
-                loglog(RC_LOG_SERIOUS, "unknown address family");
+                loglog(RC_LOG_SERIOUS, "unknown address family (do_command)");
                 return FALSE;
         }
-        verb_suffix = subnetisaddr(&sr->this.client, &sr->this.host_addr)
+        verb_suffix = subnetisaddr(&sr->this.client, local)
             ? hs : cs;
     }
+    return verb_suffix;
+}
+
+bool
+do_command(struct connection *c, const struct spd_route *sr
+           , const char *verb, struct state *st)
+{
+    const char *verb_suffix = kernel_command_verb_suffix(st, sr);
 
     DBG(DBG_CONTROL, DBG_log("command executing %s%s"
 			     , verb, verb_suffix));
 
     if(kernel_ops->docommand != NULL) {
-	return (*kernel_ops->docommand)(c,sr, verb, st);
+	return (*kernel_ops->docommand)(c,sr, verb, verb_suffix, st);
     } else {
 	DBG(DBG_CONTROL, DBG_log("no do_command for method %s"
 				 , kernel_ops->kern_name));
@@ -740,7 +759,7 @@ trap_connection(struct connection *c)
          */
         if (c->spd.routing < RT_ROUTED_TUNNEL)
         {
-            return route_and_eroute(c, &c->spd, NULL);
+            return route_and_eroute(c, &c->spd, &c->spd, NULL);
         }
         return TRUE;
 
@@ -755,7 +774,7 @@ trap_connection(struct connection *c)
 }
 
 static bool shunt_eroute(struct connection *c
-		  , struct spd_route *sr
+		  , const struct spd_route *sr
 		  , enum routing_t rt_kind
 		  , enum pluto_sadb_operations op
 		  , const char *opname)
@@ -768,7 +787,7 @@ static bool shunt_eroute(struct connection *c
 }
 
 static bool sag_eroute(struct state *st
-		  , struct spd_route *sr
+		  , const const struct spd_route *sr
 		  , enum pluto_sadb_operations op
 		  , const char *opname)
 {
@@ -797,10 +816,8 @@ unroute_connection(struct connection *c)
     {
         cr = sr->routing;
 
-        if (erouted(cr))
+        if (shunt_erouted(cr))
         {
-            /* cannot handle a live one */
-            passert(sr->routing != RT_ROUTED_TUNNEL);
 	    if(kernel_ops->shunt_eroute) {
 		kernel_ops->shunt_eroute(c, sr, RT_UNROUTED
 					 , ERO_DELETE, "delete");
@@ -1156,7 +1173,7 @@ replace_bare_shunt(const ip_address *src, const ip_address *dst
 }
 
 bool eroute_connection(struct state *st
-                       , struct spd_route *sr
+                       , const struct spd_route *sr
 		       , ipsec_spi_t spi, unsigned int proto
 		       , enum eroute_type esatype
 		       , const struct pfkey_proto_info *proto_info
@@ -1164,7 +1181,7 @@ bool eroute_connection(struct state *st
 		       , char *policy_label
 		       )
 {
-    const ip_address *null_host = aftoinfo(addrtypeof(&sr->this.host_addr))->any;
+    const ip_address *null_host = aftoinfo(addrtypeof(&st->st_remoteaddr))->any;
     const ip_address *this, *that;
     char buf2[256];
 
@@ -1349,7 +1366,6 @@ static err_t setup_esp_sa(struct connection *c
                           , unsigned int encapsulation
                           , bool inbound
                           , bool outgoing_ref_set
-                          , bool replace
                           , const char *inbound_str
                           , struct kernel_sa *said_next
                           , ip_address src, u_int16_t natt_sport
@@ -1362,6 +1378,7 @@ static err_t setup_esp_sa(struct connection *c
     const struct esp_info *ei;
     u_int16_t key_len;
     char text_said[SATOT_BUF];
+    bool replace = FALSE;
     IPsecSAref_t refhim = st->st_refhim;
 
     /* this maps IKE/IETF values into kernel identifiers */
@@ -1573,24 +1590,14 @@ static err_t setup_esp_sa(struct connection *c
                      said_next->authkeylen);
         });
 
+    replace = FALSE;
     if(inbound) {
         /*
          * set corresponding outbound SA. We can do this on
          * each SA in the bundle without harm.
          */
         said_next->refhim = refhim;
-    } else if (!outgoing_ref_set) {
-        /* on outbound, pick up the SAref if not already done */
-        said_next->ref    = refhim;
-        outgoing_ref_set  = TRUE;
-    }
-
-    if(inbound) {
-        /*
-         * set corresponding outbound SA. We can do this on
-         * each SA in the bundle without harm.
-         */
-        said_next->refhim = refhim;
+	replace = st->st_esp.our_spi_in_kernel;
     } else if (!outgoing_ref_set) {
         /* on outbound, pick up the SAref if not already done */
         said_next->ref    = refhim;
@@ -1646,8 +1653,6 @@ setup_half_ipsec_sa(struct state *parent_st
     int encapsulation;
 
     bool add_selector;
-
-    replace = inbound && (kernel_ops->get_spi != NULL);
 
     if (inbound)
     {
@@ -1772,7 +1777,7 @@ setup_half_ipsec_sa(struct state *parent_st
 	    outgoing_ref_set  = TRUE;
 	}
 
-        if (!kernel_ops->add_sa(said_next, replace)) {
+        if (!kernel_ops->add_sa(said_next, FALSE)) {
 	    DBG(DBG_KLIPS, DBG_log("add_sa tunnel failed"));
             goto fail;
 	}
@@ -1845,12 +1850,15 @@ setup_half_ipsec_sa(struct state *parent_st
         said_next->sec_ctx = st->sec_ctx;
 #endif
 
+	replace = FALSE;
+
 	if(inbound) {
 	    /*
 	     * set corresponding outbound SA. We can do this on
 	     * each SA in the bundle without harm.
 	     */
 	    said_next->refhim = refhim;
+	    replace = st->st_ipcomp.our_spi_in_kernel;
 	} else if (!outgoing_ref_set) {
 	    /* on outbound, pick up the SAref if not already done */
 	    said_next->ref    = refhim;
@@ -1888,7 +1896,7 @@ setup_half_ipsec_sa(struct state *parent_st
     if (st->st_esp.present)
     {
         err = setup_esp_sa(c, st, encapsulation, inbound
-                           , outgoing_ref_set, replace
+                           , outgoing_ref_set
                            , inbound_str, said_next
                            , src, srcport, dst, dstport
                            , src_client, dst_client);
@@ -1917,7 +1925,6 @@ setup_half_ipsec_sa(struct state *parent_st
 
     /* set up AH SA, if any */
 
-    DBG(DBG_KLIPS, DBG_log("ah maybe"));
     if (st->st_ah.present)
     {
         ipsec_spi_t ah_spi = inbound? st->st_ah.our_spi : st->st_ah.attrs.spi;
@@ -1966,24 +1973,14 @@ setup_half_ipsec_sa(struct state *parent_st
         said_next->sec_ctx = st->sec_ctx;
 #endif
 
+	replace = FALSE;
 	if(inbound) {
 	    /*
 	     * set corresponding outbound SA. We can do this on
 	     * each SA in the bundle without harm.
 	     */
 	    said_next->refhim = refhim;
-	} else if (!outgoing_ref_set) {
-	    /* on outbound, pick up the SAref if not already done */
-	    said_next->ref    = refhim;
-	    outgoing_ref_set  = TRUE;
-	}
-
-	if(inbound) {
-	    /*
-	     * set corresponding outbound SA. We can do this on
-	     * each SA in the bundle without harm.
-	     */
-	    said_next->refhim = refhim;
+	    replace = st->st_ah.our_spi_in_kernel;
 	} else if (!outgoing_ref_set) {
 	    /* on outbound, pick up the SAref if not already done */
 	    said_next->ref    = refhim;
@@ -2001,7 +1998,6 @@ setup_half_ipsec_sa(struct state *parent_st
        }
             memset(said_next->authkey, 0, said_next->authkeylen);
 #endif
-
 
 	/*
 	 * SA refs will have been allocated for this SA.
@@ -2080,9 +2076,9 @@ setup_half_ipsec_sa(struct state *parent_st
             }
 
             /* MCR - should be passed a spd_eroute structure here */
-            (void) raw_eroute(&sr->that.host_addr   /* this_host */
+            (void) raw_eroute(&st->st_remoteaddr    /* this_host */
 			      , &sr->that.client    /* this_client */
-                              , &sr->this.host_addr /* that_host */
+                              , &st->st_localaddr   /* that_host */
 			      , &sr->this.client    /* that_client */
                               , inner_spi              /* spi */
 			      , proto                  /* proto */
@@ -2568,7 +2564,8 @@ install_inbound_ipsec_sa(struct state *parent_st, struct state *st)
  */
 bool
 route_and_eroute(struct connection *c USED_BY_KLIPS
-                 , struct spd_route *sr USED_BY_KLIPS
+                 , const struct spd_route *sr USED_BY_KLIPS
+                 , struct spd_route *orig_sr USED_BY_KLIPS
                  , struct state *st USED_BY_KLIPS)
 {
     struct spd_route *esr;
@@ -2765,11 +2762,11 @@ route_and_eroute(struct connection *c USED_BY_KLIPS
         if (st == NULL)
         {
             passert(sr->eroute_owner == SOS_NOBODY);
-            sr->routing = RT_ROUTED_PROSPECTIVE;
+            orig_sr->routing = RT_ROUTED_PROSPECTIVE;
         }
         else
         {
-            sr->routing = RT_ROUTED_TUNNEL;
+            orig_sr->routing = RT_ROUTED_TUNNEL;
 
             DBG(DBG_CONTROL,
                 char cib[CONN_INST_BUF];
@@ -2779,7 +2776,7 @@ route_and_eroute(struct connection *c USED_BY_KLIPS
                         , st->st_serialno
                         , sr->eroute_owner
                         , st->st_connection->newest_ipsec_sa));
-            sr->eroute_owner = st->st_serialno;
+            orig_sr->eroute_owner = st->st_serialno;
             /* clear host shunts that clash with freshly installed route */
             clear_narrow_holds(&sr->this.client, &sr->that.client, sr->this.protocol);
         }
@@ -2876,6 +2873,7 @@ install_ipsec_sa(struct state *parent_st
 {
     struct connection *const c = st->st_connection;
     struct spd_route desired_sr;
+    struct spd_route *orig_sr;
     struct spd_route *sr;
     enum routability rb;
 
@@ -2897,6 +2895,7 @@ install_ipsec_sa(struct state *parent_st
     desired_sr = *sr;
 
     build_desired_sr(st, &desired_sr);
+    orig_sr = sr;
     sr = &desired_sr;
 
     rb = could_route(st->st_connection, sr);
@@ -2942,9 +2941,10 @@ install_ipsec_sa(struct state *parent_st
 
     for (; sr != NULL; sr = sr->next)
     {
-        DBG(DBG_CONTROL, DBG_log("sr for #%ld: %s"
+        DBG(DBG_CONTROL, DBG_log("sr for #%ld: %s (eroute_owner: #%ld)"
                                  , st->st_serialno
-                                 , enum_name(&routing_story, sr->routing)));
+                                 , enum_name(&routing_story, sr->routing)
+                                 , sr->eroute_owner));
 
         /*
          * if the eroute owner is not us, then make it us.
@@ -2956,7 +2956,7 @@ install_ipsec_sa(struct state *parent_st
         if (sr->eroute_owner != st->st_serialno
             && sr->routing != RT_UNROUTED_KEYED)
         {
-            if (!route_and_eroute(st->st_connection, sr, st))
+            if (!route_and_eroute(st->st_connection, sr, orig_sr, st))
             {
                 delete_ipsec_sa(st, FALSE);
                 /* XXX go and unroute any SRs that were successfully
@@ -3255,6 +3255,33 @@ get_sa_info(struct state *st, bool inbound, time_t *ago)
     }
     return TRUE;
 }
+
+void saref_init(void)
+{
+    int e, sk, saref;
+    saref = 1;
+    errno=0;
+
+    sk = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    e = setsockopt(sk, IPPROTO_IP, IP_IPSEC_REFINFO, &saref, sizeof(saref));
+    if (e == -1 ) {
+        openswan_log("SAref support [disabled]: %s" , strerror(errno));
+    }
+    else {
+        openswan_log("SAref support [enabled]");
+    }
+    errno=0;
+    e = setsockopt(sk, IPPROTO_IP, IP_IPSEC_BINDREF, &saref, sizeof(saref));
+    if (e == -1 ) {
+        openswan_log("SAbind support [disabled]: %s" , strerror(errno));
+    }
+    else {
+        openswan_log("SAbind support [enabled]");
+    }
+
+    close(sk);
+}
+
 /*
  * Local Variables:
  * c-basic-offset:4

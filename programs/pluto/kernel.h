@@ -162,11 +162,11 @@ struct kernel_ops {
                        , char *policy_label
 		       );
     bool (*shunt_eroute)(struct connection *c
-			 , struct spd_route *sr
+			 , const struct spd_route *sr
 			 , enum routing_t rt_kind
 			 , enum pluto_sadb_operations op
 			 , const char *opname);
-    bool (*sag_eroute)(struct state *st, struct spd_route *sr
+    bool (*sag_eroute)(struct state *st, const struct spd_route *sr
 		       , enum pluto_sadb_operations op, const char *opname);
     bool (*eroute_idle)(struct state *st, time_t idle_max);
     void (*remove_orphaned_holds)(int transportproto
@@ -186,8 +186,9 @@ struct kernel_ops {
 			   ipsec_spi_t max,
 			   const char *text_said);
     bool (*docommand)(struct connection *c
-		      , struct spd_route *sr
+		      , const struct spd_route *sr
 		      , const char *verb
+                      , const char *verb_suffix
 		      , struct state *st);
     void (*process_ifaces)(struct raw_iface *rifaces);
     bool (*exceptsocket)(int socketfd, int family);
@@ -211,36 +212,40 @@ extern struct raw_iface *find_raw_ifaces6(void);
 
 /* helper for invoking call outs */
 extern int fmt_common_shell_out(char *buf, int blen, struct connection *c
-				, struct spd_route *sr, struct state *st);
+				, const struct spd_route *sr, struct state *st);
 
 #ifdef KLIPS_MAST
 /* KLIPS/mast/pfkey things */
 extern bool pfkey_plumb_mast_device(int mast_dev);
 #endif
 
+/* calculate the suffix for logging */
+extern const char *kernel_command_verb_suffix(struct state *st
+                                              , const struct spd_route *sr);
+
 /* many bits reach in to use this, but maybe shouldn't */
-extern bool do_command(struct connection *c, struct spd_route *sr, const char *verb, struct state *st);
+extern bool do_command(struct connection *c, const struct spd_route *sr, const char *verb, struct state *st);
 
 #if defined(linux)
-extern bool do_command_linux(struct connection *c, struct spd_route *sr
+extern bool do_command_linux(struct connection *c, const struct spd_route *sr
 			     , const char *verb, struct state *st);
 extern bool invoke_command(const char *verb, const char *verb_suffix, char *cmd);
 #endif
 
 #if defined(__FreeBSD__)
-extern bool do_command_freebsd(struct connection *c, struct spd_route *sr
+extern bool do_command_freebsd(struct connection *c, const struct spd_route *sr
 			       , const char *verb, struct state *st);
 extern bool invoke_command(const char *verb, const char *verb_suffix, char *cmd);
 #endif
 
 #if defined(macintosh) || (defined(__MACH__) && defined(__APPLE__))
-extern bool do_command_darwin(struct connection *c, struct spd_route *sr
+extern bool do_command_darwin(struct connection *c, const struct spd_route *sr
 			       , const char *verb, struct state *st);
 extern bool invoke_command(const char *verb, const char *verb_suffix, char *cmd);
 #endif
 
 #if defined(__CYGWIN32__)
-extern bool do_command_cygwin(struct connection *c, struct spd_route *sr
+extern bool do_command_cygwin(struct connection *c, const struct spd_route *sr
 			      , const char *verb, struct state *st);
 #endif
 
@@ -345,17 +350,19 @@ extern ipsec_spi_t shunt_policy_spi(struct connection *c, bool prospective);
 
 
 struct state;	/* forward declaration of tag */
-extern ipsec_spi_t get_ipsec_spi(ipsec_spi_t avoid
-				 , int proto
-				 , struct spd_route *sr
-				 , bool tunnel_mode);
-extern ipsec_spi_t get_my_cpi(struct spd_route *sr, bool tunnel_mode);
+struct ipsec_proto_info;
+extern bool get_ipsec_spi(struct ipsec_proto_info *pi
+			  , int proto
+			  , struct state *st
+			  , bool tunnel_mode);
+extern ipsec_spi_t get_my_cpi(struct state *st, bool tunnel_mode);
 
 extern bool install_inbound_ipsec_sa(struct state *parent_st, struct state *st);
 extern bool install_ipsec_sa(struct state *parent_st, struct state *st, bool inbound_also);
 extern void delete_ipsec_sa(struct state *st, bool inbound_only);
 extern bool route_and_eroute(struct connection *c
-			     , struct spd_route *sr
+			     , const struct spd_route *sr
+			     , struct spd_route *orig_sr
 			     , struct state *st);
 
 extern bool was_eroute_idle(struct state *st, time_t idle_max);
@@ -365,7 +372,7 @@ extern bool get_sa_info(struct state *st, bool inbound, time_t *ago);
 extern bool update_ipsec_sa(struct state *parent_st, struct state *st);
 #endif
 
-extern bool eroute_connection(struct state *st, struct spd_route *sr
+extern bool eroute_connection(struct state *st, const struct spd_route *sr
 			      , ipsec_spi_t spi, unsigned int proto
 			      , enum eroute_type esatype
 			      , const struct pfkey_proto_info *proto_info
@@ -393,6 +400,9 @@ extern const struct kernel_ops mast_kernel_ops;
 extern bool kernel_overlap_supported(void);
 extern const char *kernel_if_name(void);
 extern void show_kernel_interface(void);
+
+extern void saref_init(void);
+
 
 #define _KERNEL_H_
 #endif /* _KERNEL_H_ */

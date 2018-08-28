@@ -21,6 +21,14 @@ check:
 	@${MAKE} -C 03-plutostart check
 	@${MAKE} -C 04-whackwrite check
 	@${MAKE} -C 05-addconn check
+	@${MAKE} -C 06-dnsdelay check
 	@${MAKE} -C 06-alsoflip check
 	@${MAKE} -C 07-sourceipv6 check
+	@${MAKE} -C 08-sitelocalv6 check
+	@${MAKE} -C 09-v6inv4 check
+	@${MAKE} -C 10-defaultroute check
+	@${MAKE} -C 11-subnets      check
+	@${MAKE} -C 12-rwcertwrite  check
+	@${MAKE} -C 13-bigpubkey  check
+
 

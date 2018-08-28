@@ -288,6 +288,11 @@ enum state_kind {
      * for all work states. */
     STATE_PARENT_R1,
     STATE_PARENT_R2,
+    STATE_CHILD_C0_KEYING,     /* initial state for a CHILD SA that has started keying */
+    STATE_CHILD_C1_KEYED,      /* terminal state for a CHILD SA that has been successfully keyed */
+
+    /* INITIATOR child (re)key states */
+    STATE_CHILD_C1_REKEY,      /* initial state for a CHILD SA that is beginning a rekey */
 
     /* IKEv2 Delete States */
     STATE_IKESA_DEL,
@@ -308,7 +313,8 @@ enum phase1_role {
 				  |LELEM(STATE_MAIN_I3) | LELEM(STATE_MAIN_I4) \
 				  |LELEM(STATE_AGGR_I1) | LELEM(STATE_AGGR_I2) \
 				  |LELEM(STATE_XAUTH_I0) | LELEM(STATE_XAUTH_I1) \
-				  | LELEM(STATE_MODE_CFG_I1))
+				  | LELEM(STATE_MODE_CFG_I1) \
+                                  | LELEM(STATE_PARENT_I1))
 #define IS_PHASE1_INIT(s)         ((s) == STATE_MAIN_I1 \
 				   || (s) == STATE_MAIN_I2 \
 				   || (s) == STATE_MAIN_I3 \
@@ -322,20 +328,16 @@ enum phase1_role {
 #define IS_PHASE15(s) (STATE_XAUTH_R0 <= (s) && (s) <= STATE_XAUTH_I1)
 #define IS_QUICK(s) (STATE_QUICK_R0 <= (s) && (s) <= STATE_QUICK_R2)
 #define IS_ISAKMP_ENCRYPTED(s)     (STATE_MAIN_R2 <= (s) && STATE_AGGR_R0!=(s) && STATE_AGGR_I1 != (s) && STATE_INFO != (s))
-#define IS_ISAKMP_AUTHENTICATED(s) (STATE_MAIN_R3 <= (s) && STATE_AGGR_R0!=(s) && STATE_AGGR_I1 != (s))
-#define IS_ISAKMP_SA_ESTABLISHED(s) ((s) == STATE_MAIN_R3 || (s) == STATE_MAIN_I4 \
-				  || (s) == STATE_AGGR_I2 || (s) == STATE_AGGR_R2 \
-				  || (s) == STATE_XAUTH_R0 || (s) == STATE_XAUTH_R1 \
-				  || (s) == STATE_MODE_CFG_R0 || (s) == STATE_MODE_CFG_R1 \
-				  || (s) == STATE_MODE_CFG_R2 || (s) == STATE_MODE_CFG_I1 \
-                                  || (s) == STATE_XAUTH_I0 || (s) == STATE_XAUTH_I1)
+#define IS_ISAKMP_AUTHENTICATED(s) ((STATE_MAIN_R3 <= (s) && STATE_AGGR_R0!=(s) && STATE_AGGR_I1 != (s)) || STATE_PARENT_I3 == (s) || STATE_PARENT_R2)
+#define IS_ISAKMP_SA_ESTABLISHED(s) LHAS(ISAKMP_SA_ESTABLISHED_STATES, (s))
 #define ISAKMP_SA_ESTABLISHED_STATES  (LELEM(STATE_MAIN_R3) | \
 				       LELEM(STATE_MAIN_I4) | \
 				       LELEM(STATE_AGGR_I2) | \
 				       LELEM(STATE_AGGR_R2) | \
 				       LELEM(STATE_XAUTH_R0) | \
 				       LELEM(STATE_XAUTH_R1) | \
-				       LELEM(STATE_MODE_CFG_R0) | \
+                                       LELEM(STATE_PARENT_I3) | LELEM(STATE_PARENT_R2) | \
+				       LELEM(STATE_MODE_CFG_R0) |       \
 				       LELEM(STATE_MODE_CFG_R1) | \
 				       LELEM(STATE_MODE_CFG_R2) | \
 				       LELEM(STATE_MODE_CFG_I1) | \
@@ -348,15 +350,17 @@ enum phase1_role {
 #define IS_MODE_CFG_ESTABLISHED(s) ((s) == STATE_MODE_CFG_R2)
 #endif
 
-#define IS_PARENT_SA_ESTABLISHED(s) ((s) == STATE_PARENT_I2 || (s) == STATE_PARENT_R1 || (s) == STATE_IKESA_DEL)
+#define IS_PARENT_SA_HALFOPEN(s) ((s) == STATE_PARENT_I1 || (s) == STATE_PARENT_R1)
+
+#define IS_PARENT_SA_ESTABLISHED(s) ((s) == STATE_PARENT_I3 || (s) == STATE_PARENT_I2 || (s) == STATE_PARENT_R2 || (s) == STATE_IKESA_DEL)
 /*
  * Issue here is that our child sa appears as a STATE_PARENT_I3/STATE_PARENT_R2 state which it should not
  * So we fall back to checking if it is cloned, and therefor really a child
  */
-#define IS_CHILD_SA_ESTABLISHED(st) ( (((st->st_state == STATE_PARENT_I3) || (st->st_state == STATE_PARENT_R2)) && (st->st_clonedfrom != SOS_NOBODY)) || (st->st_state == STATE_CHILDSA_DEL) )
+#define IS_CHILD_SA_ESTABLISHED(st) ( (((st->st_state == STATE_PARENT_I3) || (st->st_state == STATE_PARENT_R2)) && (st->st_clonedfrom != SOS_NOBODY)) || (st->st_state == STATE_CHILDSA_DEL) || (st->st_state == STATE_CHILD_C1_KEYED))
 
 #define IS_CHILD_SA(st)  ((st)->st_clonedfrom != SOS_NOBODY)
-#define IS_PARENT_SA(st) (!IS_CHILD_SA(st))
+#define IS_PARENT_SA(st) ((st)->st_clonedfrom == SOS_NOBODY)
 
 
 /* kind of struct connection
@@ -635,7 +639,10 @@ enum keyword_host {
     KH_IPHOSTNAME   = 7,                /* host_addr invalid, only string */
     KH_IPADDR       = LOOSE_ENUM_OTHER,
 };
+/* keyword_name(&kw_host_list, type, buffer[KEYWORD_NAME_BUFLEN]) */
 struct keyword_enum_values kw_host_list;
+#define KH_ISWILDCARD(type)  ((type) == KH_ANY || (type) == KH_DEFAULTROUTE)
+#define KH_ISKNOWNADDR(type) ((type) == KH_IPADDR || (type)==KH_IFACE)
 
 /* BIND enumerated types */
 
@@ -644,10 +651,14 @@ struct keyword_enum_values kw_host_list;
  */
 enum dns_auth_level {
     DAL_UNSIGNED,	/* AD in response, but no signature: no authentication */
-    DAL_NOTSEC,	/* no AD in response: authentication impossible */
-    DAL_SIGNED,	/* AD and signature in response: authentic */
-    DAL_LOCAL	/* locally provided (pretty good) */
+    DAL_NOTSEC,	   /* no AD in response: authentication impossible */
+    DAL_SIGNED,	   /* AD and signature in response: authentic */
+    DAL_TRUSTEDCA, /* signed by locally trusted certificate authroity */
+    DAL_LOCAL,	   /* locally provided (pretty good) */
+    DAL_CERTFILE,  /* loaded from local certificate container */
 };
+extern enum_names dns_auth_level_names;
+
 
 /*
  * define a macro for use in error messages
@@ -663,6 +674,7 @@ enum dns_auth_level {
  * private key types for keys.h
  */
 enum PrivateKeyKind {
+  PPK_GUESS = 0,        /* no idea, guess via some method */
     PPK_PSK = 1,
     /* PPK_DSS, */	/* not implemented */
     PPK_RSA = 3,

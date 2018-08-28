@@ -109,6 +109,7 @@ stf_status
 main_outI1(int whack_sock
 	   , struct connection *c
 	   , struct state *predecessor
+           , so_serial_t  *newstateno
 	   , lset_t policy
 	   , unsigned long try
 	   , enum crypto_importance importance
@@ -136,6 +137,7 @@ main_outI1(int whack_sock
     /* set up new state */
     get_cookie(TRUE, st->st_icookie, COOKIE_SIZE, &c->spd.that.host_addr);
     initialize_new_state(st, c, policy, try, whack_sock, importance);
+    if(newstateno) *newstateno = st->st_serialno;
 
     /* IKE version numbers -- used mostly in logging */
     st->st_ike_maj        = IKEv1_MAJOR_VERSION;
@@ -445,14 +447,14 @@ RSA_sign_hash(struct connection *c
 	      , const u_char *hash_val, size_t hash_len)
 {
     size_t sz = 0;
-    const struct RSA_private_key *k = get_RSA_private_key(c);
+    const struct private_key_stuff *pks = get_RSA_private_key(c);
 
-    if (k == NULL)
+    if (pks == NULL)
 	return 0;	/* failure: no key to use */
 
-    sz = k->pub.k;
+    sz = pks->pub->u.rsa.k;
     passert(RSA_MIN_OCTETS <= sz && 4 + hash_len < sz && sz <= RSA_MAX_OCTETS);
-    sign_hash(k, hash_val, hash_len, sig_val, sz);
+    sign_hash(pks, hash_val, hash_len, sig_val, sz);
     return sz;
 }
 
@@ -578,6 +580,7 @@ main_inI1_outR1(struct msg_digest *md)
     struct state *st;
     struct connection *c;
     pb_stream r_sa_pbs;
+    lset_t policy_hint = 0;
 
     /* we are looking for an OpenPGP Vendor ID sent by the peer */
     bool openpgp_peer = FALSE;
@@ -621,7 +624,7 @@ main_inI1_outR1(struct msg_digest *md)
     c = find_host_connection(ANY_MATCH, &md->iface->ip_addr, pluto_port500
                              , KH_IPADDR
 			     , &md->sender
-			     , md->sender_port, LEMPTY);
+			     , md->sender_port, LEMPTY, POLICY_IKEV1_DISABLE, &policy_hint);
 
     if (c == NULL)
     {
@@ -649,7 +652,7 @@ main_inI1_outR1(struct msg_digest *md)
 	    d = find_host_connection(ANY_MATCH, &md->iface->ip_addr, pluto_port500
                                      , KH_ANY
 				     , (ip_address*)NULL
-				     , md->sender_port, policy);
+				     , md->sender_port, policy, POLICY_IKEV1_DISABLE, &policy_hint);
 
 	    for (; d != NULL; d = d->IPhp_next)
 	    {
@@ -681,6 +684,12 @@ main_inI1_outR1(struct msg_digest *md)
 		, ip_str(&md->iface->ip_addr), ntohs(portof(&md->iface->ip_addr))
 		, (policy != LEMPTY) ? " with policy=" : ""
 		, (policy != LEMPTY) ? bitnamesof(sa_policy_bit_names, policy) : "");
+
+            if(policy_hint & POLICY_IKEV1_DISABLE) {
+                md->note = INVALID_MAJOR_VERSION;
+                return STF_FAIL;
+            }
+
 	    /* XXX notification is in order! */
 	    return STF_IGNORE;
 	}
@@ -2206,6 +2215,12 @@ main_inR3_tail(struct msg_digest *md
     }
 
     ISAKMP_SA_established(st->st_connection, st->st_serialno);
+
+    if(isanyaddr(&st->st_localaddr) || st->st_localport == 0) {
+        /* record where packet arrived to */
+        st->st_localaddr  = md->iface->ip_addr;
+        st->st_localport  = md->iface->port;
+    }
 
     passert((st->st_policy & POLICY_PFS)==0 || st->st_pfs_group != NULL );
 
