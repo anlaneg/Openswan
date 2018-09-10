@@ -1360,6 +1360,7 @@ pfkey_msg_build(struct sadb_msg **pfkey_msg, struct sadb_ext *extensions[], int 
 		  (unsigned long)(total_size * IPSEC_PFKEYv2_ALIGN),
 		  &(extensions[0]));
 
+	//填充extensions[0]做为sadb_msg
 	memcpy(*pfkey_msg,
 	       extensions[0],
 	       sizeof(struct sadb_msg));

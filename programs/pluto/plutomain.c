@@ -518,6 +518,7 @@ main(int argc, char **argv)
 	    break;	/* not actually reached */
 
 	case 'C':
+		//指定core位置
 	    coredir = clone_str(optarg, "coredir");
 	    break;
 
@@ -776,6 +777,7 @@ main(int argc, char **argv)
 #endif
 
     /* if a core dir was set, chdir there */
+	//如果配置了core位置，则切换工作目录到coredir
     if(coredir)
 	if(chdir(coredir) == -1) {
 	   int e = errno;
@@ -833,7 +835,7 @@ main(int argc, char **argv)
 #endif
 
     /* If not suppressed, do daemon fork */
-
+    //处理fork
     if (fork_desired)
     {
 	{

@@ -74,6 +74,7 @@ _read_subnet(const char *src, size_t len, ip_subnet *dst, ip_subnet *dstko,
     /* workaround for typo "%4:" instead of "%v4:" introduced in old openswan release*/
     int offset=0;
 
+    //协议族分析
     if ((len > 4) && (strncmp(src, "%v4:", 4)==0)) {
 	af = AF_INET;
     }
@@ -123,7 +124,8 @@ init_virtual_ip(const char *private_list)
     private_net_ko_len=0;
     while (str) {
 	next = strchr(str,',');
-	if (!next) next = str + strlen(str);
+	if (!next) next = str + strlen(str);//未用逗号分隔
+	//自str(长度next-str)中分析出subnet
 	if (_read_subnet(str, next-str, &sub, &sub, &ok)) {
 	    if (ok)
 		private_net_ok_len++;

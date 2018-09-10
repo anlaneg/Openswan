@@ -67,6 +67,7 @@
 #define KLIPS_OP_MASK	0xFF
 #define KLIPS_OP_FLAG_SHIFT	8
 
+//pfkey类型的fd
 int pfkeyfd = NULL_FD;
 
 typedef u_int32_t pfkey_seq_t;
@@ -172,13 +173,14 @@ static inline unsigned eroute_type_to_pfkey_satype(enum eroute_type esatype)
 	}
 }
 
+//打开pfkeyfd
 void
 init_pfkey(void)
 {
     pid = getpid();
 
     /* open PF_KEY socket */
-
+    //创建PF_KEY类型socket
     pfkeyfd = safe_socket(PF_KEY, SOCK_RAW, PF_KEY_V2);
 
     if (pfkeyfd == -1)
@@ -229,6 +231,7 @@ typedef struct pfkey_item {
 static pfkey_item *pfkey_iq_head = NULL;	/* oldest */
 static pfkey_item *pfkey_iq_tail;	/* youngest */
 
+//等待pfkeyfd可读
 static bool
 pfkey_input_ready(void)
 {
@@ -266,6 +269,7 @@ pfkey_input_ready(void)
  * received matches that in the message header, and that the message
  * is for this process.
  */
+//自pfkeyfd中读取数据，存放在buf->bytes中，消息格式为buf->msg
 static bool
 pfkey_get(pfkey_buf *buf)
 {
@@ -279,6 +283,7 @@ pfkey_get(pfkey_buf *buf)
 	if (!pfkey_input_ready())
 	    return FALSE;
 
+	//自pfkeyfd中读取数据
 	len = read(pfkeyfd, buf->bytes, sizeof(buf->bytes));
 
 	if (len < 0)
@@ -291,6 +296,7 @@ pfkey_get(pfkey_buf *buf)
 	}
 	else if ((size_t) len < sizeof(buf->msg))
 	{
+		//数据不足，报错
 	    plog("pfkey_get read truncated PF_KEY message: %d bytes; ignoring message"
 		, (int) len);
 	}
@@ -577,6 +583,7 @@ pfkey_build(int error
 }
 
 /* pfkey_extensions_init + pfkey_build + pfkey_msg_hdr_build */
+//以msg_type做为extensions的第一个元素，其类型为sadb_ext
 static bool
 pfkey_msg_start(u_int8_t msg_type
 , u_int8_t satype
@@ -660,6 +667,7 @@ finish_pfkey_msg(struct sadb_ext *extensions[K_SADB_EXT_MAX + 1]
 
 	if (kern_interface != NO_KERNEL)
 	{
+		//向pfkeyfd中写入消息
 	    ssize_t r = write(pfkeyfd, pfkey_msg, len);
 	    int e1 = errno;
 
@@ -1191,6 +1199,7 @@ bool pfkey_del_sa(const struct kernel_sa *sa)
     && finish_pfkey_msg(extensions, "Delete SA", sa->text_said, NULL);
 }
 
+//关闭pfkeyfd
 void
 pfkey_close(void)
 {

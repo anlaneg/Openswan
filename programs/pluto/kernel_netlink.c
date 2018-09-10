@@ -393,6 +393,7 @@ static void init_netlink(void)
 {
     struct sockaddr_nl addr;
 
+    //创建netlink fd
     netlinkfd = safe_socket(AF_NETLINK, SOCK_DGRAM, NETLINK_XFRM);
 
     if (netlinkfd < 0)
@@ -401,6 +402,7 @@ static void init_netlink(void)
     if (fcntl(netlinkfd, F_SETFD, FD_CLOEXEC) != 0)
 	exit_log_errno((e, "fcntl(FD_CLOEXEC) in init_netlink()"));
 
+    //创建广播监听的fd
     netlink_bcast_fd = safe_socket(AF_NETLINK, SOCK_DGRAM, NETLINK_XFRM);
 
     if (netlink_bcast_fd < 0)
@@ -415,6 +417,7 @@ static void init_netlink(void)
     addr.nl_family = AF_NETLINK;
     addr.nl_pid = getpid();
     addr.nl_groups = XFRMGRP_ACQUIRE | XFRMGRP_EXPIRE;
+    //绑定对应的组播组
     if (bind(netlink_bcast_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
 	exit_log_errno((e, "Failed to bind bcast socket in init_netlink() - Perhaps kernel was not compiled with CONFIG_XFRM"));
 

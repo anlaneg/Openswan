@@ -2277,6 +2277,7 @@ init_kernel(void)
 	/* If we detect NETKEY and KLIPS, we can't continue */
 	if(stat("/proc/net/pfkey", &buf) == 0 &&
 	   stat("/proc/net/ipsec/spi/all", &buf) == 0) {
+		//两种情况都存在，报错
 	    /* we don't die, we just log and go to sleep */
 	    openswan_log("Can not run with both NETKEY and KLIPS in the kernel");
 	    openswan_log("Please check your kernel configuration, or specify a stack");
@@ -2289,10 +2290,12 @@ init_kernel(void)
 
 #if defined(NETKEY_SUPPORT)
     case USE_NETKEY:
+    //探测pfkey,需要pk_key.ko支持
 	if (stat("/proc/net/pfkey", &buf) == 0) {
 	    kern_interface = USE_NETKEY;
 	    openswan_log("Using Linux XFRM/NETKEY IPsec interface code on %s"
 			 , kversion);
+	    //设置kernel_ops
 	    kernel_ops = &netkey_kernel_ops;
 	    break;
 	} else
@@ -2352,6 +2355,7 @@ init_kernel(void)
 	break;
 
     default:
+    //未找到合适的kernel_interface
 	if(kern_interface == AUTO_PICK)
 		openswan_log("kernel interface auto-pick failed - no suitable kernel stack found");
 	else
