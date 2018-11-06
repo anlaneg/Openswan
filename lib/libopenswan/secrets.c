@@ -692,6 +692,9 @@ void private_key_setup(struct private_key_stuff *pks)
         pks->pub->alg = PUBKEY_ALG_RSA;
         reference_key(pks->pub);
     }
+#ifdef HAVE_LIBNSS
+    pks->pub->nssCert = NULL;
+#endif
 }
 
 
@@ -878,23 +881,33 @@ static err_t osw_process_psk_secret(const struct secret *secrets, chunk_t *psk)
 	clonetochunk(*psk, flp->tok+1, flp->cur - flp->tok  - 2, "PSK");
 	(void) shift();
     }
-    else
+    else if (*flp->tok == '0')
     {
 	char buf[RSA_MAX_ENCODING_BYTES];	/* limit on size of binary representation of key */
 	size_t sz;
 
 	ugh = ttodatav(flp->tok, flp->cur - flp->tok, 0, buf, sizeof(buf), &sz
 	    , diag_space, sizeof(diag_space), TTODATAV_SPACECOUNTS);
-	if (ugh != NULL)
+	if (ugh == NULL)
 	{
-	    /* ttodata didn't like PSK data */
+	    /* success */
+	    clonetochunk(*psk, buf, sz, "PSK");
+	    (void) shift();
+	}
+	else if (DBGP(DBG_PRIVATE))
+	{
+	    /* ttodata didn't like PSK data - we are allowed to leak the PSK */
 	    ugh = builddiag("PSK data malformed (%s): %s", ugh, flp->tok);
 	}
 	else
 	{
-	    clonetochunk(*psk, buf, sz, "PSK");
-	    (void) shift();
+	    /* ttodata didn't like PSK data */
+	    ugh = builddiag("PSK data malformed (%s); enable plutodebug=private to log secret text.", ugh);
 	}
+    }
+    else
+    {
+	    ugh = builddiag("PSK data malformed: PSK must start with a double-quote or a zero.");
     }
 
     DBG(DBG_CONTROL, DBG_log("Processing PSK at line %d: %s"
@@ -1310,9 +1323,6 @@ osw_process_secret_records(struct secret **psecrets, int verbose,
                 s->secretlineno=flp->lino;
                 s->next = NULL;
 
-#ifdef HAVE_LIBNSS
-                s->pks.pub->nssCert = NULL;
-#endif
                 private_key_setup(&s->pks);
 
 

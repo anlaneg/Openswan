@@ -906,7 +906,7 @@ main(int argc, char **argv)
 
 #ifdef HAVE_LIBNSS
 	char buf[100];
-	snprintf(buf, sizeof(buf), "%s",oco->confddir);
+	snprintf(buf, sizeof(buf), "sql:%s",oco->confddir);
 	loglog(RC_LOG_SERIOUS,"nss directory plutomain: %s",buf);
 	SECStatus nss_init_status= NSS_InitReadWrite(buf);
 	if (nss_init_status != SECSuccess) {
@@ -995,9 +995,6 @@ main(int argc, char **argv)
 	     */
 	    openswan_log("@(#) built on "__DATE__":" __TIME__ " by " BUILDER);
 	}
-#if defined(USE_1DES)
-	openswan_log("WARNING: 1DES is enabled");
-#endif
     }
 
     if(coredir) {
